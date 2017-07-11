@@ -442,18 +442,25 @@ func (client *NodeClient) listenAndForward(socket net.Listener, remoteAddr strin
 			return
 		}
 		defer conn.Close()
+
 		// start proxying:
-		doneC := make(chan interface{}, 2)
-		go func() {
-			io.Copy(incoming, conn)
-			doneC <- true
-		}()
-		go func() {
-			io.Copy(conn, incoming)
-			doneC <- true
-		}()
-		<-doneC
-		<-doneC
+		errc := make(chan error, 2)
+		replicate := func(dst io.Writer, src io.Reader) {
+			_, err := io.Copy(dst, src)
+			errc <- err
+		}
+		go replicate(incoming, conn)
+		go replicate(conn, incoming)
+
+		// wait until done or error
+		select {
+		case err = <-errc:
+			if err != nil {
+				log.Debugf("nodeClient.listenAndForward(%v -> %v) exited with error: %v", incoming.RemoteAddr(), remoteAddr, err)
+			}
+			return
+		}
+
 		log.Debugf("nodeClient.listenAndForward(%v -> %v) exited", incoming.RemoteAddr(), remoteAddr)
 	}
 	// request processing loop: accept incoming requests to be connected to nodes
