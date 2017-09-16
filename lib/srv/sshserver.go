@@ -1035,7 +1035,7 @@ func (s *Server) handleWinChange(ch ssh.Channel, req *ssh.Request, ctx *ctx) err
 	}
 	term := ctx.getTerm()
 	if term != nil {
-		err = term.setWinsize(*params)
+		err = term.SetWinSize(*params)
 		if err != nil {
 			ctx.Error(err)
 		}
@@ -1082,16 +1082,9 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *ctx) error 
 	var (
 		params *rsession.TerminalParams
 		err    error
-		term   *terminal
+		term   Terminal
 	)
 	r, err := parsePTYReq(req)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	// if the caller asked for an invalid sized pty (like ansible
-	// which asks for a 0x0 size) update the request with defaults
-	err = r.CheckAndSetDefaults()
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -1104,13 +1097,14 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *ctx) error 
 
 	// already have terminal?
 	if term = ctx.getTerm(); term == nil {
-		term, params, err = requestPTY(req)
-		if err != nil {
-			return trace.Wrap(err)
-		}
+		term, params, err = newRemoteTerminal(req)
+		//term, params, err = requestPTY(req)
+		//if err != nil {
+		//	return trace.Wrap(err)
+		//}
 		ctx.setTerm(term)
 	}
-	term.setWinsize(*params)
+	term.SetWinSize(*params)
 
 	// update the session:
 	if err := s.reg.notifyWinChange(*params, ctx); err != nil {

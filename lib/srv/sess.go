@@ -220,7 +220,7 @@ func (s *sessionRegistry) notifyWinChange(params rsession.TerminalParams, ctx *c
 		events.EventUser:      ctx.teleportUser,
 		events.TerminalSize:   params.Serialize(),
 	})
-	err := ctx.session.term.setWinsize(params)
+	err := ctx.session.term.SetWinSize(params)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -285,7 +285,8 @@ type session struct {
 	// parties are connected lients/users
 	parties map[rsession.ID]*party
 
-	term *terminal
+	//term *terminal
+	term Terminal
 
 	// closeC channel is used to kill all goroutines owned
 	// by the session
@@ -324,7 +325,7 @@ func newSession(id rsession.ID, r *sessionRegistry, context *ctx) (*session, err
 	}
 	term := context.getTerm()
 	if term != nil {
-		winsize, err := term.getWinsize()
+		winsize, err := term.GetWinSize()
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -532,13 +533,15 @@ func (s *session) start(ch ssh.Channel, ctx *ctx) error {
 		return trace.Wrap(err)
 	}
 	ctx.Debugf("session exec: %#v", cmd)
-	if err := s.term.run(cmd); err != nil {
+	if err := s.term.Run(cmd); err != nil {
 		ctx.Errorf("shell command (%v %v) failed: %v", cmd.Path, cmd.Args, err)
 		return trace.ConvertSystemError(err)
 	}
 	if err := s.addParty(p); err != nil {
 		return trace.Wrap(err)
 	}
+
+	params := s.term.GetTerminalParams()
 
 	// emit "new session created" event:
 	s.registry.srv.EmitAuditEvent(events.SessionStartEvent, events.EventFields{
@@ -549,7 +552,7 @@ func (s *session) start(ch ssh.Channel, ctx *ctx) error {
 		events.EventUser:       ctx.teleportUser,
 		events.LocalAddr:       ctx.conn.LocalAddr().String(),
 		events.RemoteAddr:      ctx.conn.RemoteAddr().String(),
-		events.TerminalSize:    s.term.params.Serialize(),
+		events.TerminalSize:    params.Serialize(),
 	})
 
 	// start recording this session
@@ -571,16 +574,17 @@ func (s *session) start(ch ssh.Channel, ctx *ctx) error {
 	go func() {
 		// notify terminal about a copy process going on
 		defer s.term.Add(-1)
-		io.Copy(s.writer, s.term.pty)
+		io.Copy(s.writer, s.term.ReadWriter())
 		log.Infof("session.io.copy() stopped")
 	}()
 
 	// wait for the shell to complete:
 	go func() {
-		result, err := collectStatus(cmd, cmd.Wait())
-		if result != nil {
-			s.registry.broadcastResult(s.id, *result)
-		}
+		err := s.term.WaitRun()
+		//result, err := collectStatus(cmd, cmd.Wait())
+		//if result != nil {
+		//	s.registry.broadcastResult(s.id, *result)
+		//}
 		if err != nil {
 			log.Errorf("shell exited with error: %v", err)
 		} else {
@@ -694,7 +698,7 @@ func (s *session) pollAndSync() {
 			Active:    &active,
 			Parties:   nil,
 		})
-		winSize, err := s.term.getWinsize()
+		winSize, err := s.term.GetWinSize()
 		if err != nil {
 			return err
 		}
@@ -702,7 +706,7 @@ func (s *session) pollAndSync() {
 			int(winSize.Height) != sess.TerminalParams.H)
 		if termSizeChanged {
 			log.Debugf("terminal has changed from: %v to %v", sess.TerminalParams, winSize)
-			err = s.term.setWinsize(sess.TerminalParams)
+			err = s.term.SetWinSize(sess.TerminalParams)
 		}
 		return err
 	}
@@ -788,7 +792,7 @@ func (s *session) addParty(p *party) error {
 	// this goroutine keeps pumping party's input into the session
 	go func() {
 		defer s.term.Add(-1)
-		_, err := io.Copy(s.term.pty, p)
+		_, err := io.Copy(s.term.ReadWriter(), p)
 		p.ctx.Infof("party.io.copy(%v) closed", p.id)
 		if err != nil {
 			log.Error(err)

@@ -268,9 +268,9 @@ func prepareCommand(ctx *ctx) (*exec.Cmd, error) {
 		}
 	}
 	if ctx.session != nil {
-		if ctx.session.term != nil {
-			c.Env = append(c.Env, fmt.Sprintf("SSH_TTY=%s", ctx.session.term.tty.Name()))
-		}
+		//if ctx.session.term != nil {
+		//	c.Env = append(c.Env, fmt.Sprintf("SSH_TTY=%s", ctx.session.term.tty.Name()))
+		//}
 		if ctx.session.id != "" {
 			c.Env = append(c.Env, fmt.Sprintf("%s=%s", teleport.SSHSessionID, ctx.session.id))
 		}

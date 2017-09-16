@@ -17,9 +17,14 @@ limitations under the License.
 package srv
 
 import (
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"sync"
+
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
@@ -28,8 +33,165 @@ import (
 	"github.com/kr/pty"
 	"github.com/moby/moby/pkg/term"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
 )
+
+type remoteTerminal struct {
+	sync.WaitGroup
+	session     *ssh.Session
+	params      rsession.TerminalParams
+	sessionDone chan bool
+	ptyBuffer   *ptyBuffer
+}
+
+func newRemoteTerminal(req *ssh.Request) (*remoteTerminal, *rsession.TerminalParams, error) {
+	r, err := parsePTYReq(req)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	log.Debugf("Parsed pty request pty(env=%v, w=%v, h=%v)", r.Env, r.W, r.H)
+
+	params, err := rsession.NewTerminalParamsFromUint32(r.W, r.H)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+
+	// TODO(russjones): Get the agent from the user here.
+	systemAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+	if err != nil {
+		return nil, nil, err
+	}
+	authMethod := ssh.PublicKeysCallback(agent.NewClient(systemAgent).Signers)
+
+	clientConfig := &ssh.ClientConfig{
+		User: "rjones",
+		Auth: []ssh.AuthMethod{
+			authMethod,
+		},
+		// TODO(russjones): Use a HostKeyCallback here to check the host key of the
+		// client we are connecting to.
+	}
+
+	// TODO(russjones): Add a timeout here. Add real remote host:port here.
+	// This should probably be passed into this function, so we don't always dial
+	// to the remote node.
+	client, err := ssh.Dial("tcp", "localhost:22", clientConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	session, err := client.NewSession()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	t := &remoteTerminal{
+		session:     session,
+		sessionDone: make(chan bool),
+		ptyBuffer:   &ptyBuffer{},
+	}
+	t.SetWinSize(*params)
+
+	return t, params, nil
+}
+
+type ptyBuffer struct {
+	r io.Reader
+	w io.Writer
+}
+
+func (b *ptyBuffer) Read(p []byte) (n int, err error) {
+	return b.r.Read(p)
+}
+
+func (b *ptyBuffer) Write(p []byte) (n int, err error) {
+	return b.w.Write(p)
+}
+
+// TODO(russjones): We don't care what c actually is here.
+func (t *remoteTerminal) Run(c *exec.Cmd) error {
+	// combine stdout and stderr
+	stdout, err := t.session.StdoutPipe()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	t.session.Stderr = t.session.Stdout
+	stdin, err := t.session.StdinPipe()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	t.ptyBuffer = &ptyBuffer{
+		r: stdout,
+		w: stdin,
+	}
+
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}
+
+	if err := t.session.RequestPty("xterm", 80, 40, modes); err != nil {
+		return err
+	}
+
+	if err := t.session.Shell(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (t *remoteTerminal) WaitRun() error {
+	<-t.sessionDone
+
+	// TODO(russjones): Who closes the channel here?
+
+	return nil
+}
+
+func (t *remoteTerminal) ReadWriter() io.ReadWriter {
+	return t.ptyBuffer
+}
+
+func (t *remoteTerminal) Close() error {
+	err := t.session.Close()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
+}
+
+func (t *remoteTerminal) GetWinSize() (*term.Winsize, error) {
+	return t.params.Winsize(), nil
+}
+
+func (t *remoteTerminal) SetWinSize(params rsession.TerminalParams) error {
+	// TODO(russjones): Revendor the SSH library so so we can update the window
+	// size here.
+	//err = session.WindowChange(params.H, params.W)
+	//if err != nil {
+	//    return nil, nil, err
+	//}
+	t.params = params
+	return nil
+}
+
+func (t *remoteTerminal) GetTerminalParams() rsession.TerminalParams {
+	return t.params
+}
+
+type Terminal interface {
+	Add(int)
+	Run(c *exec.Cmd) error
+	ReadWriter() io.ReadWriter
+	Close() error
+	GetWinSize() (*term.Winsize, error)
+	SetWinSize(params rsession.TerminalParams) error
+	GetTerminalParams() rsession.TerminalParams
+	WaitRun() error
+}
 
 // terminal provides handy functions for managing PTY, usch as resizing windows
 // execing processes with PTY and cleaning up
@@ -43,15 +205,6 @@ type terminal struct {
 	params rsession.TerminalParams
 }
 
-func parsePTYReq(req *ssh.Request) (*sshutils.PTYReqParams, error) {
-	var r sshutils.PTYReqParams
-	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
-		log.Warnf("failed to parse PTY request: %v", err)
-		return nil, err
-	}
-	return &r, nil
-}
-
 func newTerminal() (*terminal, error) {
 	// Create new PTY
 	pty, tty, err := pty.Open()
@@ -62,13 +215,9 @@ func newTerminal() (*terminal, error) {
 	return &terminal{pty: pty, tty: tty, err: err}, nil
 }
 
+// TODO(russjones): Rename this to newLocalTerminal().
 func requestPTY(req *ssh.Request) (*terminal, *rsession.TerminalParams, error) {
-	var r sshutils.PTYReqParams
-	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
-		log.Warnf("failed to parse PTY request: %v", err)
-		return nil, nil, trace.Wrap(err)
-	}
-	err := r.CheckAndSetDefaults()
+	r, err := parsePTYReq(req)
 	if err != nil {
 		return nil, nil, trace.Wrap(err)
 	}
@@ -83,11 +232,19 @@ func requestPTY(req *ssh.Request) (*terminal, *rsession.TerminalParams, error) {
 	if err != nil {
 		return nil, nil, trace.Wrap(err)
 	}
-	t.setWinsize(*params)
+	t.SetWinSize(*params)
 	return t, params, nil
 }
 
-func (t *terminal) getWinsize() (*term.Winsize, error) {
+func (t *terminal) ReadWriter() io.ReadWriter {
+	return t.pty
+}
+
+func (t *terminal) WaitRun() error {
+	return nil
+}
+
+func (t *terminal) GetWinSize() (*term.Winsize, error) {
 	t.Lock()
 	defer t.Unlock()
 	if t.pty == nil {
@@ -100,7 +257,7 @@ func (t *terminal) getWinsize() (*term.Winsize, error) {
 	return ws, nil
 }
 
-func (t *terminal) setWinsize(params rsession.TerminalParams) error {
+func (t *terminal) SetWinSize(params rsession.TerminalParams) error {
 	t.Lock()
 	defer t.Unlock()
 	if t.pty == nil {
@@ -115,7 +272,7 @@ func (t *terminal) setWinsize(params rsession.TerminalParams) error {
 
 // getTerminalParams is a fast call to get cached terminal parameters
 // and avoid extra system call
-func (t *terminal) getTerminalParams() rsession.TerminalParams {
+func (t *terminal) GetTerminalParams() rsession.TerminalParams {
 	t.Lock()
 	defer t.Unlock()
 	return t.params
@@ -128,7 +285,7 @@ func (t *terminal) closeTTY() {
 	t.tty = nil
 }
 
-func (t *terminal) run(c *exec.Cmd) error {
+func (t *terminal) Run(c *exec.Cmd) error {
 	defer t.closeTTY()
 	c.Stdout = t.tty
 	c.Stdin = t.tty
@@ -161,6 +318,22 @@ func (t *terminal) closePTY() {
 
 	t.pty.Close()
 	t.pty = nil
+}
+
+func parsePTYReq(req *ssh.Request) (*sshutils.PTYReqParams, error) {
+	var r sshutils.PTYReqParams
+	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
+		log.Warnf("failed to parse PTY request: %v", err)
+		return nil, err
+	}
+
+	// if the caller asked for an invalid sized pty (like ansible
+	// which asks for a 0x0 size) update the request with defaults
+	if err := r.CheckAndSetDefaults(); err != nil {
+		return nil, err
+	}
+
+	return &r, nil
 }
 
 func parseWinChange(req *ssh.Request) (*rsession.TerminalParams, error) {

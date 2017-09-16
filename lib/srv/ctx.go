@@ -56,7 +56,8 @@ type ctx struct {
 	sync.RWMutex
 
 	// term holds PTY if it was requested by the session
-	term *terminal
+	//term *terminal
+	term Terminal
 
 	// agent is a client to remote SSH agent
 	agent agent.Agent
@@ -122,13 +123,15 @@ func (c *ctx) setAgent(a agent.Agent, ch ssh.Channel) {
 	c.agent = a
 }
 
-func (c *ctx) getTerm() *terminal {
+//func (c *ctx) getTerm() *terminal {
+func (c *ctx) getTerm() Terminal {
 	c.RLock()
 	defer c.RUnlock()
 	return c.term
 }
 
-func (c *ctx) setTerm(t *terminal) {
+//func (c *ctx) setTerm(t *terminal) {
+func (c *ctx) setTerm(t Terminal) {
 	c.Lock()
 	defer c.Unlock()
 	c.term = t
