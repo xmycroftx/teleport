@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package srv
+package srvutils
 
 import (
 	"fmt"
@@ -22,11 +22,15 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+
+	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/events"
+	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/utils"
 
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 )
 
 var ctxID int32
@@ -34,6 +38,17 @@ var ctxID int32
 // subsystemResult is a result of execution of the subsystem
 type subsystemResult struct {
 	err error
+}
+
+type Server interface {
+	ID() string
+	GetNamespace() string
+
+	EmitAuditEvent(string, events.EventFields)
+
+	GetAuditLog() events.IAuditLog
+	GetAuthService() auth.AccessPoint
+	GetSessionServer() rsession.Service
 }
 
 // ctx holds session specific context, such as SSH auth agents
@@ -45,7 +60,8 @@ type ctx struct {
 	env map[string]string
 
 	// srv is a pointer to the server holding the context
-	srv *Server
+	//srv *Server
+	srv Server
 
 	// server specific incremental session id
 	id int
@@ -203,12 +219,12 @@ func newCtx(srv *Server, conn *ssh.ServerConn) *ctx {
 		clusterName:      conn.Permissions.Extensions[utils.CertTeleportClusterName],
 		login:            conn.User(),
 	}
-	ctx.Entry = log.WithFields(srv.logFields(log.Fields{
-		"local":        conn.LocalAddr(),
-		"remote":       conn.RemoteAddr(),
-		"login":        ctx.login,
-		"teleportUser": ctx.teleportUser,
-		"id":           ctx.id,
-	}))
+	//ctx.Entry = log.WithFields(srv.logFields(log.Fields{
+	//	"local":        conn.LocalAddr(),
+	//	"remote":       conn.RemoteAddr(),
+	//	"login":        ctx.login,
+	//	"teleportUser": ctx.teleportUser,
+	//	"id":           ctx.id,
+	//}))
 	return ctx
 }

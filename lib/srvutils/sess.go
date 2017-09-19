@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package srv
+package srvutils
 
 import (
 	"fmt"
@@ -90,7 +90,7 @@ func (s *sessionRegistry) openSession(ch ssh.Channel, req *ssh.Request, ctx *ctx
 		// emit "joined session" event:
 		s.srv.EmitAuditEvent(events.SessionJoinEvent, events.EventFields{
 			events.SessionEventID:  string(ctx.session.id),
-			events.EventNamespace:  s.srv.getNamespace(),
+			events.EventNamespace:  s.srv.GetNamespace(),
 			events.EventLogin:      ctx.login,
 			events.EventUser:       ctx.teleportUser,
 			events.LocalAddr:       ctx.conn.LocalAddr().String(),
@@ -140,7 +140,7 @@ func (s *sessionRegistry) leaveSession(party *party) error {
 		events.SessionEventID:  string(sess.id),
 		events.EventUser:       party.user,
 		events.SessionServerID: party.serverID,
-		events.EventNamespace:  s.srv.getNamespace(),
+		events.EventNamespace:  s.srv.GetNamespace(),
 	})
 
 	// this goroutine runs for a short amount of time only after a session
@@ -168,19 +168,19 @@ func (s *sessionRegistry) leaveSession(party *party) error {
 		s.srv.EmitAuditEvent(events.SessionEndEvent, events.EventFields{
 			events.SessionEventID: string(sess.id),
 			events.EventUser:      party.user,
-			events.EventNamespace: s.srv.getNamespace(),
+			events.EventNamespace: s.srv.GetNamespace(),
 		})
 		if err := sess.Close(); err != nil {
 			log.Error(err)
 		}
 
 		// mark it as inactive in the DB
-		if s.srv.sessionServer != nil {
+		if s.srv.GetSessionServer() != nil {
 			False := false
-			s.srv.sessionServer.UpdateSession(rsession.UpdateRequest{
+			s.srv.GetSessionServer().UpdateSession(rsession.UpdateRequest{
 				ID:        sess.id,
 				Active:    &False,
-				Namespace: s.srv.getNamespace(),
+				Namespace: s.srv.GetNamespace(),
 			})
 		}
 	}
@@ -214,7 +214,7 @@ func (s *sessionRegistry) notifyWinChange(params rsession.TerminalParams, ctx *c
 	sid := ctx.session.id
 	// report this to the event/audit log:
 	s.srv.EmitAuditEvent(events.ResizeEvent, events.EventFields{
-		events.EventNamespace: s.srv.getNamespace(),
+		events.EventNamespace: s.srv.GetNamespace(),
 		events.SessionEventID: sid,
 		events.EventLogin:     ctx.login,
 		events.EventUser:      ctx.teleportUser,
@@ -232,8 +232,8 @@ func (s *sessionRegistry) notifyWinChange(params rsession.TerminalParams, ctx *c
 	}
 
 	go func() {
-		err := s.srv.sessionServer.UpdateSession(
-			rsession.UpdateRequest{ID: sid, TerminalParams: &params, Namespace: s.srv.getNamespace()})
+		err := s.srv.GetSessionServer().UpdateSession(
+			rsession.UpdateRequest{ID: sid, TerminalParams: &params, Namespace: s.srv.GetNamespace()})
 		if err != nil {
 			log.Error(err)
 		}
@@ -259,7 +259,7 @@ func (s *sessionRegistry) findSession(id rsession.ID) (*session, bool) {
 }
 
 func newSessionRegistry(srv *Server) *sessionRegistry {
-	if srv.sessionServer == nil {
+	if srv.GetSessionServer() == nil {
 		panic("need a session server")
 	}
 	return &sessionRegistry{
@@ -321,7 +321,7 @@ func newSession(id rsession.ID, r *sessionRegistry, context *ctx) (*session, err
 		Created:    time.Now().UTC(),
 		LastActive: time.Now().UTC(),
 		ServerID:   context.srv.ID(),
-		Namespace:  r.srv.getNamespace(),
+		Namespace:  r.srv.GetNamespace(),
 	}
 	term := context.getTerm()
 	if term != nil {
@@ -332,12 +332,12 @@ func newSession(id rsession.ID, r *sessionRegistry, context *ctx) (*session, err
 		rsess.TerminalParams.W = int(winsize.Width - 1)
 		rsess.TerminalParams.H = int(winsize.Height)
 	}
-	err := r.srv.sessionServer.CreateSession(rsess)
+	err := r.srv.GetSessionServer().CreateSession(rsess)
 	if err != nil {
 		if trace.IsAlreadyExists(err) {
 			// if session already exists, make sure they are compatible
 			// Login matches existing login
-			existing, err := r.srv.sessionServer.GetSession(r.srv.getNamespace(), id)
+			existing, err := r.srv.GetSessionServer().GetSession(r.srv.GetNamespace(), id)
 			if err != nil {
 				return nil, trace.Wrap(err)
 			}
@@ -545,7 +545,7 @@ func (s *session) start(ch ssh.Channel, ctx *ctx) error {
 
 	// emit "new session created" event:
 	s.registry.srv.EmitAuditEvent(events.SessionStartEvent, events.EventFields{
-		events.EventNamespace:  ctx.srv.getNamespace(),
+		events.EventNamespace:  ctx.srv.GetNamespace(),
 		events.SessionEventID:  string(s.id),
 		events.SessionServerID: ctx.srv.ID(),
 		events.EventLogin:      ctx.login,
@@ -556,9 +556,9 @@ func (s *session) start(ch ssh.Channel, ctx *ctx) error {
 	})
 
 	// start recording this session
-	auditLog := s.registry.srv.alog
+	auditLog := s.registry.srv.GetAuditLog()
 	if auditLog != nil {
-		recorder, err := newSessionRecorder(auditLog, ctx.srv.getNamespace(), s.id)
+		recorder, err := newSessionRecorder(auditLog, ctx.srv.GetNamespace(), s.id)
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -650,8 +650,8 @@ func (s *session) removeParty(p *party) error {
 			})
 		}
 	}
-	if s.registry.srv.sessionServer != nil {
-		go storageRemove(s.registry.srv.sessionServer)
+	if s.registry.srv.GetSessionServer() != nil {
+		go storageRemove(s.registry.srv.GetSessionServer())
 	}
 	return nil
 }
@@ -669,7 +669,7 @@ func (s *session) SetLingerTTL(ttl time.Duration) {
 }
 
 func (s *session) getNamespace() string {
-	return s.registry.srv.getNamespace()
+	return s.registry.srv.GetNamespace()
 }
 
 // pollAndSync is a loop inside a goroutite which keeps synchronizing the terminal
@@ -681,7 +681,7 @@ func (s *session) pollAndSync() {
 
 	ns := s.getNamespace()
 
-	sessionServer := s.registry.srv.sessionServer
+	sessionServer := s.registry.srv.GetSessionServer()
 	if sessionServer == nil {
 		return
 	}
@@ -783,8 +783,8 @@ func (s *session) addParty(p *party) error {
 			Namespace: s.getNamespace(),
 		})
 	}
-	if s.registry.srv.sessionServer != nil {
-		go storageUpdate(s.registry.srv.sessionServer)
+	if s.registry.srv.GetSessionServer() != nil {
+		go storageUpdate(s.registry.srv.GetSessionServer())
 	}
 
 	p.ctx.Infof("[SESSION] new party joined: %v", p.String())
