@@ -1184,21 +1184,21 @@ func replyError(ch ssh.Channel, req *ssh.Request, err error) {
 	}
 }
 
-func closeAll(closers ...io.Closer) error {
-	var err error
-	for _, cl := range closers {
-		if cl == nil {
-			continue
-		}
-		if e := cl.Close(); e != nil {
-			err = e
-		}
-	}
-	return err
-}
-
-type closerFunc func() error
-
-func (f closerFunc) Close() error {
-	return f()
-}
+//func closeAll(closers ...io.Closer) error {
+//	var err error
+//	for _, cl := range closers {
+//		if cl == nil {
+//			continue
+//		}
+//		if e := cl.Close(); e != nil {
+//			err = e
+//		}
+//	}
+//	return err
+//}
+//
+//type closerFunc func() error
+//
+//func (f closerFunc) Close() error {
+//	return f()
+//}

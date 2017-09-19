@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package srvutils
+package srv
 
 import (
 	"io"
@@ -34,6 +34,17 @@ import (
 	"github.com/moby/moby/pkg/term"
 	log "github.com/sirupsen/logrus"
 )
+
+type Terminal interface {
+	Add(int)
+	Run(c *exec.Cmd) error
+	ReadWriter() io.ReadWriter
+	Close() error
+	GetWinSize() (*term.Winsize, error)
+	SetWinSize(params rsession.TerminalParams) error
+	GetTerminalParams() rsession.TerminalParams
+	WaitRun() error
+}
 
 type remoteTerminal struct {
 	sync.WaitGroup
@@ -180,17 +191,6 @@ func (t *remoteTerminal) SetWinSize(params rsession.TerminalParams) error {
 
 func (t *remoteTerminal) GetTerminalParams() rsession.TerminalParams {
 	return t.params
-}
-
-type Terminal interface {
-	Add(int)
-	Run(c *exec.Cmd) error
-	ReadWriter() io.ReadWriter
-	Close() error
-	GetWinSize() (*term.Winsize, error)
-	SetWinSize(params rsession.TerminalParams) error
-	GetTerminalParams() rsession.TerminalParams
-	WaitRun() error
 }
 
 // terminal provides handy functions for managing PTY, usch as resizing windows

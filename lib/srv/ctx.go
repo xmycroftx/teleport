@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package srvutils
+package srv
 
 import (
 	"fmt"
@@ -32,6 +32,15 @@ import (
 
 	log "github.com/sirupsen/logrus"
 )
+
+// execResult is used internally to send the result of a command execution from
+// a goroutine to SSH request handler and back to the calling client
+type execResult struct {
+	command string
+
+	// returned exec code
+	code int
+}
 
 var ctxID int32
 
@@ -107,7 +116,7 @@ type ctx struct {
 	session *session
 
 	// full command asked to be executed in this context
-	exec *execResponse
+	//exec *execResponse
 
 	// clusterName is the name of the cluster current user
 	// is authenticated with
@@ -214,7 +223,7 @@ func newCtx(srv *Server, conn *ssh.ServerConn) *ctx {
 		id:               int(atomic.AddInt32(&ctxID, int32(1))),
 		result:           make(chan execResult, 10),
 		subsystemResultC: make(chan subsystemResult, 10),
-		srv:              srv,
+		srv:              *srv,
 		teleportUser:     conn.Permissions.Extensions[utils.CertTeleportUser],
 		clusterName:      conn.Permissions.Extensions[utils.CertTeleportClusterName],
 		login:            conn.User(),
@@ -227,4 +236,23 @@ func newCtx(srv *Server, conn *ssh.ServerConn) *ctx {
 	//	"id":           ctx.id,
 	//}))
 	return ctx
+}
+
+func closeAll(closers ...io.Closer) error {
+	var err error
+	for _, cl := range closers {
+		if cl == nil {
+			continue
+		}
+		if e := cl.Close(); e != nil {
+			err = e
+		}
+	}
+	return err
+}
+
+type closerFunc func() error
+
+func (f closerFunc) Close() error {
+	return f()
 }
