@@ -1,4 +1,4 @@
-package fwd
+package forward
 
 import (
 	//"crypto/subtle"
@@ -339,7 +339,8 @@ func (f *fakeServer) handlePtyReq(ctx *psrv.ServerContext, channel ssh.Channel, 
 
 	term := ctx.GetTerm()
 	if term == nil {
-		term, _, err = psrv.NewRemoteTerminal(req)
+		//term, _, err = psrv.NewRemoteTerminal(req)
+		term, err = psrv.NewLocalTerminal(req)
 		if err != nil {
 			return err
 		}

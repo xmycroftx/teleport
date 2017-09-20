@@ -119,10 +119,6 @@ type ServerContext struct {
 	ClusterName string
 }
 
-//func (c *ServerContext) ServerConn() *ssh.ServerConn {
-//	return c.conn
-//}
-
 func (c *ServerContext) JoinOrCreateSession(reg *SessionRegistry) error {
 	// As SSH conversation progresses, at some point a session will be created and
 	// its ID will be added to the environment

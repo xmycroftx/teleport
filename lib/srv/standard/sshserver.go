@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package srv implements SSH server that supports multiplexing
 // tunneling, SSH connections proxying and only supports Key based auth
-package std
+package standard
 
 import (
 	"fmt"
@@ -1126,15 +1126,15 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.Server
 
 	// already have terminal?
 	if term = ctx.GetTerm(); term == nil {
-		//term, params, err = newRemoteTerminal(req)
-		term, _, err = psrv.RequestPTY(req)
+		term, err = psrv.NewLocalTerminal(req)
 		if err != nil {
 			return trace.Wrap(err)
 		}
 		ctx.SetTerm(term)
 	}
-	params = term.GetTerminalParams()
-	term.SetWinSize(params)
+
+	//params = term.GetTerminalParams()
+	//term.SetWinSize(params)
 
 	// update the session:
 	if err := s.reg.NotifyWinChange(params, ctx); err != nil {

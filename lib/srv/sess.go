@@ -539,21 +539,14 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 		ctx.SetTerm(nil)
 	} else {
 		var err error
-		if s.term, err = newTerminal(); err != nil {
+		if s.term, err = newLocalTerminal(); err != nil {
 			ctx.Infof("handleShell failed to create term: %v", err)
 			return trace.Wrap(err)
 		}
 	}
-	//// prepare environment & Launch shell:
-	//cmd, err := prepInteractiveCommand(ctx)
-	cmd, err := foo()
-	if err != nil {
-		return trace.Wrap(err)
-	}
 
-	ctx.Debugf("session exec: %#v", cmd)
-	if err := s.term.Run(cmd); err != nil {
-		ctx.Errorf("shell command (%v %v) failed: %v", cmd.Path, cmd.Args, err)
+	if err := s.term.Run(ctx); err != nil {
+		//ctx.Errorf("shell command (%v %v) failed: %v", cmd.Path, cmd.Args, err)
 		return trace.ConvertSystemError(err)
 	}
 	if err := s.addParty(p); err != nil {
@@ -589,21 +582,22 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 	go s.pollAndSync()
 
 	// Pipe session to shell and visa-versa capturing input and output
-	s.term.Add(1)
+	s.term.AddWaitCounter(1)
 	go func() {
 		// notify terminal about a copy process going on
-		defer s.term.Add(-1)
-		io.Copy(s.writer, s.term.ReadWriter())
+		defer s.term.AddWaitCounter(-1)
+		io.Copy(s.writer, s.term.PTY())
 		log.Infof("session.io.copy() stopped")
 	}()
 
 	// wait for the shell to complete:
 	go func() {
-		err := s.term.WaitRun()
+		//err := s.term.WaitRun()
 		//result, err := collectStatus(cmd, cmd.Wait())
-		//if result != nil {
-		//	s.registry.broadcastResult(s.id, *result)
-		//}
+		result, err := s.term.Wait()
+		if result != nil {
+			s.registry.broadcastResult(s.id, *result)
+		}
 		if err != nil {
 			log.Errorf("shell exited with error: %v", err)
 		} else {
@@ -616,13 +610,7 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 	// wait for the session to end before the shell, kill the shell
 	go func() {
 		<-s.closeC
-		if cmd.Process != nil {
-			if err := cmd.Process.Kill(); err != nil {
-				if err.Error() != "os: process already finished" {
-					log.Error(trace.DebugReport(err))
-				}
-			}
-		}
+		s.term.Kill()
 	}()
 	return nil
 }
@@ -779,7 +767,7 @@ func (s *session) addParty(p *party) error {
 	// (output will go to it)
 	s.writer.addWriter(string(p.id), p, true)
 	p.ctx.AddCloser(p)
-	s.term.Add(1)
+	s.term.AddWaitCounter(1)
 
 	// update session on the session server
 	storageUpdate := func(db rsession.Service) {
@@ -810,8 +798,8 @@ func (s *session) addParty(p *party) error {
 
 	// this goroutine keeps pumping party's input into the session
 	go func() {
-		defer s.term.Add(-1)
-		_, err := io.Copy(s.term.ReadWriter(), p)
+		defer s.term.AddWaitCounter(-1)
+		_, err := io.Copy(s.term.PTY(), p)
 		p.ctx.Infof("party.io.copy(%v) closed", p.id)
 		if err != nil {
 			log.Error(err)
