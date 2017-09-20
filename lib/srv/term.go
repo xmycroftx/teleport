@@ -216,7 +216,7 @@ func newTerminal() (*terminal, error) {
 }
 
 // TODO(russjones): Rename this to newLocalTerminal().
-func requestPTY(req *ssh.Request) (*terminal, *rsession.TerminalParams, error) {
+func RequestPTY(req *ssh.Request) (*terminal, *rsession.TerminalParams, error) {
 	r, err := parsePTYReq(req)
 	if err != nil {
 		return nil, nil, trace.Wrap(err)
@@ -334,16 +334,4 @@ func parsePTYReq(req *ssh.Request) (*sshutils.PTYReqParams, error) {
 	}
 
 	return &r, nil
-}
-
-func parseWinChange(req *ssh.Request) (*rsession.TerminalParams, error) {
-	var r sshutils.WinChangeReqParams
-	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
-		return nil, trace.Wrap(err)
-	}
-	params, err := rsession.NewTerminalParamsFromUint32(r.W, r.H)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	return params, nil
 }

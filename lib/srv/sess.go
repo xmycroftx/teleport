@@ -19,6 +19,7 @@ package srv
 import (
 	"fmt"
 	"io"
+	//"os/exec"
 	"sync"
 	"time"
 
@@ -61,40 +62,40 @@ func init() {
 	prometheus.MustRegister(serverSessions)
 }
 
-// sessionRegistry holds a map of all active sessions on a given
+// SessionRegistry holds a map of all active sessions on a given
 // SSH server
-type sessionRegistry struct {
+type SessionRegistry struct {
 	sync.Mutex
 	sessions map[rsession.ID]*session
-	srv      *Server
+	srv      Server
 }
 
-func (s *sessionRegistry) addSession(sess *session) {
+func (s *SessionRegistry) addSession(sess *session) {
 	s.Lock()
 	defer s.Unlock()
 	s.sessions[sess.id] = sess
 }
 
-func (r *sessionRegistry) Close() {
+func (r *SessionRegistry) Close() {
 	r.Lock()
 	defer r.Unlock()
 	for _, s := range r.sessions {
 		s.Close()
 	}
-	log.Debugf("sessionRegistry.Close()")
+	log.Debugf("SessionRegistry.Close()")
 }
 
 // joinShell either joins an existing session or starts a new shell
-func (s *sessionRegistry) openSession(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *SessionRegistry) OpenSession(ch ssh.Channel, req *ssh.Request, ctx *ServerContext) error {
 	if ctx.session != nil {
 		// emit "joined session" event:
 		s.srv.EmitAuditEvent(events.SessionJoinEvent, events.EventFields{
 			events.SessionEventID:  string(ctx.session.id),
 			events.EventNamespace:  s.srv.GetNamespace(),
-			events.EventLogin:      ctx.login,
-			events.EventUser:       ctx.teleportUser,
-			events.LocalAddr:       ctx.conn.LocalAddr().String(),
-			events.RemoteAddr:      ctx.conn.RemoteAddr().String(),
+			events.EventLogin:      ctx.Login,
+			events.EventUser:       ctx.TeleportUser,
+			events.LocalAddr:       ctx.Conn.LocalAddr().String(),
+			events.RemoteAddr:      ctx.Conn.RemoteAddr().String(),
 			events.SessionServerID: ctx.srv.ID(),
 		})
 		ctx.Infof("[SESSION] joining session: %v", ctx.session.id)
@@ -102,10 +103,10 @@ func (s *sessionRegistry) openSession(ch ssh.Channel, req *ssh.Request, ctx *ctx
 		return trace.Wrap(err)
 	}
 	// session not found? need to create one. start by getting/generating an ID for it
-	sid, found := ctx.getEnv(sshutils.SessionEnvVar)
+	sid, found := ctx.GetEnv(sshutils.SessionEnvVar)
 	if !found {
 		sid = string(rsession.NewID())
-		ctx.setEnv(sshutils.SessionEnvVar, sid)
+		ctx.SetEnv(sshutils.SessionEnvVar, sid)
 	}
 	// This logic allows concurrent request to create a new session
 	// to fail, what is ok because we should never have this condition
@@ -125,7 +126,7 @@ func (s *sessionRegistry) openSession(ch ssh.Channel, req *ssh.Request, ctx *ctx
 }
 
 // leaveSession removes the given party from this session
-func (s *sessionRegistry) leaveSession(party *party) error {
+func (s *SessionRegistry) leaveSession(party *party) error {
 	sess := party.s
 	s.Lock()
 	defer s.Unlock()
@@ -190,7 +191,7 @@ func (s *sessionRegistry) leaveSession(party *party) error {
 
 // getParties allows to safely return a list of parties connected to this
 // session (as determined by ctx)
-func (s *sessionRegistry) getParties(ctx *ctx) (parties []*party) {
+func (s *SessionRegistry) getParties(ctx *ServerContext) (parties []*party) {
 	sess := ctx.session
 	if sess != nil {
 		sess.Lock()
@@ -206,7 +207,7 @@ func (s *sessionRegistry) getParties(ctx *ctx) (parties []*party) {
 
 // notifyWinChange is called when an SSH server receives a command notifying
 // us that the terminal size has changed
-func (s *sessionRegistry) notifyWinChange(params rsession.TerminalParams, ctx *ctx) error {
+func (s *SessionRegistry) NotifyWinChange(params rsession.TerminalParams, ctx *ServerContext) error {
 	if ctx.session == nil {
 		log.Debugf("notifyWinChange(): no session found!")
 		return nil
@@ -216,8 +217,8 @@ func (s *sessionRegistry) notifyWinChange(params rsession.TerminalParams, ctx *c
 	s.srv.EmitAuditEvent(events.ResizeEvent, events.EventFields{
 		events.EventNamespace: s.srv.GetNamespace(),
 		events.SessionEventID: sid,
-		events.EventLogin:     ctx.login,
-		events.EventUser:      ctx.teleportUser,
+		events.EventLogin:     ctx.Login,
+		events.EventUser:      ctx.TeleportUser,
 		events.TerminalSize:   params.Serialize(),
 	})
 	err := ctx.session.term.SetWinSize(params)
@@ -241,7 +242,7 @@ func (s *sessionRegistry) notifyWinChange(params rsession.TerminalParams, ctx *c
 	return nil
 }
 
-func (s *sessionRegistry) broadcastResult(sid rsession.ID, r execResult) error {
+func (s *SessionRegistry) broadcastResult(sid rsession.ID, r ExecResult) error {
 	s.Lock()
 	defer s.Unlock()
 
@@ -253,23 +254,23 @@ func (s *sessionRegistry) broadcastResult(sid rsession.ID, r execResult) error {
 	return nil
 }
 
-func (s *sessionRegistry) findSession(id rsession.ID) (*session, bool) {
+func (s *SessionRegistry) findSession(id rsession.ID) (*session, bool) {
 	sess, found := s.sessions[id]
 	return sess, found
 }
 
-func newSessionRegistry(srv *Server) *sessionRegistry {
+func NewSessionRegistry(srv Server) *SessionRegistry {
 	if srv.GetSessionServer() == nil {
 		panic("need a session server")
 	}
-	return &sessionRegistry{
+	return &SessionRegistry{
 		srv:      srv,
 		sessions: make(map[rsession.ID]*session),
 	}
 }
 
 // session struct describes an active (in progress) SSH session. These sessions
-// are managed by 'sessionRegistry' containers which are attached to SSH servers.
+// are managed by 'SessionRegistry' containers which are attached to SSH servers.
 type session struct {
 	sync.Mutex
 
@@ -277,7 +278,7 @@ type session struct {
 	id rsession.ID
 
 	// parent session container
-	registry *sessionRegistry
+	registry *SessionRegistry
 
 	// this writer is used to broadcast terminal I/O to different clients
 	writer *multiWriter
@@ -309,7 +310,7 @@ type session struct {
 }
 
 // newSession creates a new session with a given ID within a given context.
-func newSession(id rsession.ID, r *sessionRegistry, context *ctx) (*session, error) {
+func newSession(id rsession.ID, r *SessionRegistry, context *ServerContext) (*session, error) {
 	serverSessions.Inc()
 	rsess := rsession.Session{
 		ID: id,
@@ -317,13 +318,13 @@ func newSession(id rsession.ID, r *sessionRegistry, context *ctx) (*session, err
 			W: teleport.DefaultTerminalWidth,
 			H: teleport.DefaultTerminalHeight,
 		},
-		Login:      context.login,
+		Login:      context.Login,
 		Created:    time.Now().UTC(),
 		LastActive: time.Now().UTC(),
 		ServerID:   context.srv.ID(),
 		Namespace:  r.srv.GetNamespace(),
 	}
-	term := context.getTerm()
+	term := context.GetTerm()
 	if term != nil {
 		winsize, err := term.GetWinSize()
 		if err != nil {
@@ -358,15 +359,27 @@ func newSession(id rsession.ID, r *sessionRegistry, context *ctx) (*session, err
 		registry:  r,
 		parties:   make(map[rsession.ID]*party),
 		writer:    newMultiWriter(),
-		login:     context.login,
+		login:     context.Login,
 		closeC:    make(chan bool),
 		lingerTTL: defaults.SessionRefreshPeriod * 10,
 	}
 	return sess, nil
 }
 
+func (r *SessionRegistry) PushTermSize(sconn *ssh.ServerConn, ch ssh.Channel) error {
+	party := r.partyForConnection(sconn)
+	if party == nil {
+		return trace.BadParameter("no part found")
+	}
+
+	// this starts a loop which will keep updating the terminal
+	// size for every SSH write back to this connection
+	party.termSizePusher(ch)
+	return nil
+}
+
 // PartyForConnection finds an existing party which owns the given connection
-func (r *sessionRegistry) PartyForConnection(sconn *ssh.ServerConn) *party {
+func (r *SessionRegistry) partyForConnection(sconn *ssh.ServerConn) *party {
 	r.Lock()
 	defer r.Unlock()
 
@@ -511,15 +524,15 @@ func (r *sessionRecorder) Close() error {
 }
 
 // start starts a new interactive process (or a shell) in the current session
-func (s *session) start(ch ssh.Channel, ctx *ctx) error {
+func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 	// create a new "party" (connected client)
 	p := newParty(s, ch, ctx)
 
 	// allocate a terminal or take the one previously allocated via a
 	// seaprate "allocate TTY" SSH request
-	if ctx.getTerm() != nil {
-		s.term = ctx.getTerm()
-		ctx.setTerm(nil)
+	if ctx.GetTerm() != nil {
+		s.term = ctx.GetTerm()
+		ctx.SetTerm(nil)
 	} else {
 		var err error
 		if s.term, err = newTerminal(); err != nil {
@@ -548,10 +561,10 @@ func (s *session) start(ch ssh.Channel, ctx *ctx) error {
 		events.EventNamespace:  ctx.srv.GetNamespace(),
 		events.SessionEventID:  string(s.id),
 		events.SessionServerID: ctx.srv.ID(),
-		events.EventLogin:      ctx.login,
-		events.EventUser:       ctx.teleportUser,
-		events.LocalAddr:       ctx.conn.LocalAddr().String(),
-		events.RemoteAddr:      ctx.conn.RemoteAddr().String(),
+		events.EventLogin:      ctx.Login,
+		events.EventUser:       ctx.TeleportUser,
+		events.LocalAddr:       ctx.Conn.LocalAddr().String(),
+		events.RemoteAddr:      ctx.Conn.RemoteAddr().String(),
 		events.TerminalSize:    params.Serialize(),
 	})
 
@@ -608,9 +621,9 @@ func (s *session) start(ch ssh.Channel, ctx *ctx) error {
 	return nil
 }
 
-func (s *session) broadcastResult(r execResult) {
+func (s *session) broadcastResult(r ExecResult) {
 	for _, p := range s.parties {
-		p.ctx.sendResult(r)
+		p.ctx.SendResult(r)
 	}
 }
 
@@ -759,7 +772,7 @@ func (s *session) addParty(p *party) error {
 	// register this party as one of the session writers
 	// (output will go to it)
 	s.writer.addWriter(string(p.id), p, true)
-	p.ctx.addCloser(p)
+	p.ctx.AddCloser(p)
 	s.term.Add(1)
 
 	// update session on the session server
@@ -801,7 +814,7 @@ func (s *session) addParty(p *party) error {
 	return nil
 }
 
-func (s *session) join(ch ssh.Channel, req *ssh.Request, ctx *ctx) (*party, error) {
+func (s *session) join(ch ssh.Channel, req *ssh.Request, ctx *ServerContext) (*party, error) {
 	p := newParty(s, ch, ctx)
 	if err := s.addParty(p); err != nil {
 		return nil, trace.Wrap(err)
@@ -882,17 +895,17 @@ func (m *multiWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func newParty(s *session, ch ssh.Channel, ctx *ctx) *party {
+func newParty(s *session, ch ssh.Channel, ctx *ServerContext) *party {
 	return &party{
-		user:      ctx.teleportUser,
-		login:     ctx.login,
+		user:      ctx.TeleportUser,
+		login:     ctx.Login,
 		serverID:  s.registry.srv.ID(),
-		site:      ctx.conn.RemoteAddr().String(),
+		site:      ctx.Conn.RemoteAddr().String(),
 		id:        rsession.NewID(),
 		ch:        ch,
 		ctx:       ctx,
 		s:         s,
-		sconn:     ctx.conn,
+		sconn:     ctx.Conn,
 		termSizeC: make(chan []byte, 5),
 		closeC:    make(chan bool),
 	}
@@ -909,7 +922,7 @@ type party struct {
 	s          *session
 	sconn      *ssh.ServerConn
 	ch         ssh.Channel
-	ctx        *ctx
+	ctx        *ServerContext
 	closeC     chan bool
 	termSizeC  chan []byte
 	lastActive time.Time

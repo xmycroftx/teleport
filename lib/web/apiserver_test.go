@@ -55,7 +55,7 @@ import (
 	"github.com/gravitational/teleport/lib/services/suite"
 	"github.com/gravitational/teleport/lib/session"
 	sess "github.com/gravitational/teleport/lib/session"
-	"github.com/gravitational/teleport/lib/srv"
+	"github.com/gravitational/teleport/lib/srv/std"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/state"
 	"github.com/gravitational/teleport/lib/utils"
@@ -78,8 +78,8 @@ func TestWeb(t *testing.T) {
 }
 
 type WebSuite struct {
-	node        *srv.Server
-	proxy       *srv.Server
+	node        *std.Server
+	proxy       *std.Server
 	srvAddress  string
 	srvID       string
 	srvHostPort string
@@ -255,7 +255,7 @@ func (s *WebSuite) SetUpTest(c *C) {
 	s.srvAddress = fmt.Sprintf("127.0.0.1:%v", nodePort)
 
 	// create SSH service:
-	node, err := srv.New(
+	node, err := std.New(
 		utils.NetAddr{AddrNetwork: "tcp", Addr: s.srvAddress},
 		s.domainName,
 		[]ssh.Signer{s.signer},
@@ -263,9 +263,9 @@ func (s *WebSuite) SetUpTest(c *C) {
 		s.dir,
 		nil,
 		utils.NetAddr{},
-		srv.SetShell("/bin/sh"),
-		srv.SetSessionServer(sessionServer),
-		srv.SetAuditLog(s.roleAuth),
+		std.SetShell("/bin/sh"),
+		std.SetSessionServer(sessionServer),
+		std.SetAuditLog(s.roleAuth),
 	)
 	c.Assert(err, IsNil)
 	s.node = node
@@ -316,16 +316,16 @@ func (s *WebSuite) SetUpTest(c *C) {
 	proxyAddr := utils.NetAddr{
 		AddrNetwork: "tcp", Addr: fmt.Sprintf("127.0.0.1:%v", proxyPort),
 	}
-	s.proxy, err = srv.New(proxyAddr,
+	s.proxy, err = std.New(proxyAddr,
 		s.domainName,
 		[]ssh.Signer{s.signer},
 		s.roleAuth,
 		s.dir,
 		nil,
 		utils.NetAddr{},
-		srv.SetProxyMode(revTunServer),
-		srv.SetSessionServer(s.roleAuth),
-		srv.SetAuditLog(s.roleAuth),
+		std.SetProxyMode(revTunServer),
+		std.SetSessionServer(s.roleAuth),
+		std.SetAuditLog(s.roleAuth),
 	)
 	c.Assert(err, IsNil)
 

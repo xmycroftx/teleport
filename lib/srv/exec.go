@@ -35,7 +35,7 @@ import (
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/shell"
-	"github.com/gravitational/teleport/lib/utils"
+	//"github.com/gravitational/teleport/lib/utils"
 
 	"github.com/gravitational/trace"
 	"github.com/kardianos/osext"
@@ -51,27 +51,27 @@ const (
 
 // execResult is used internally to send the result of a command execution from
 // a goroutine to SSH request handler and back to the calling client
-type execResult struct {
-	command string
+type ExecResult struct {
+	Command string
 
 	// returned exec code
-	code int
+	Code int
 }
 
 type execReq struct {
 	Command string
 }
 
-// execResponse prepares the response to a 'exec' SSH request, i.e. executing
+// ExecResponse prepares the response to a 'exec' SSH request, i.e. executing
 // a command after making an SSH connection and delivering the result back.
-type execResponse struct {
-	cmdName string
-	cmd     *exec.Cmd
-	ctx     *ctx
+type ExecResponse struct {
+	CmdName string
+	Cmd     *exec.Cmd
+	Ctx     *ServerContext
 }
 
 // parseExecRequest parses SSH exec request
-func parseExecRequest(req *ssh.Request, ctx *ctx) (*execResponse, error) {
+func ParseExecRequest(req *ssh.Request, ctx *ServerContext) (*ExecResponse, error) {
 	var e execReq
 	if err := ssh.Unmarshal(req.Payload, &e); err != nil {
 		return nil, trace.BadParameter("failed to parse exec request, error: %v", err)
@@ -92,40 +92,40 @@ func parseExecRequest(req *ssh.Request, ctx *ctx) (*execResponse, error) {
 			}
 			e.Command = fmt.Sprintf("%s scp --remote-addr=%s --local-addr=%s %v",
 				teleportBin,
-				ctx.conn.RemoteAddr().String(),
-				ctx.conn.LocalAddr().String(),
+				ctx.Conn.RemoteAddr().String(),
+				ctx.Conn.LocalAddr().String(),
 				strings.Join(args[1:], " "))
 		}
 	}
-	ctx.exec = &execResponse{
-		ctx:     ctx,
-		cmdName: e.Command,
+	ctx.Exec = &ExecResponse{
+		Ctx:     ctx,
+		CmdName: e.Command,
 	}
-	return ctx.exec, nil
+	return ctx.Exec, nil
 }
 
-func (e *execResponse) String() string {
-	return fmt.Sprintf("Exec(cmd=%v)", e.cmdName)
+func (e *ExecResponse) String() string {
+	return fmt.Sprintf("Exec(cmd=%v)", e.CmdName)
 }
 
 // prepInteractiveCommand configures exec.Cmd object for launching an interactive command
 // (or a shell)
-func prepInteractiveCommand(ctx *ctx) (*exec.Cmd, error) {
+func prepInteractiveCommand(ctx *ServerContext) (*exec.Cmd, error) {
 	var (
 		err      error
 		runShell bool
 	)
 	// determine shell for the given OS user:
-	if ctx.exec.cmdName == "" {
+	if ctx.Exec.CmdName == "" {
 		runShell = true
-		ctx.exec.cmdName, err = shell.GetLoginShell(ctx.login)
+		ctx.Exec.CmdName, err = shell.GetLoginShell(ctx.Login)
 		if err != nil {
 			log.Error(err)
 			return nil, trace.Wrap(err)
 		}
 		// in test mode short-circuit to /bin/sh
-		if ctx.isTestStub {
-			ctx.exec.cmdName = "/bin/sh"
+		if ctx.IsTestStub {
+			ctx.Exec.CmdName = "/bin/sh"
 		}
 	}
 	c, err := prepareCommand(ctx)
@@ -138,7 +138,7 @@ func prepInteractiveCommand(ctx *ctx) (*exec.Cmd, error) {
 	// this is a login shell."
 	// https://github.com/openssh/openssh-portable/blob/master/session.c
 	if runShell {
-		c.Args = []string{"-" + filepath.Base(ctx.exec.cmdName)}
+		c.Args = []string{"-" + filepath.Base(ctx.Exec.CmdName)}
 	}
 	return c, nil
 }
@@ -150,8 +150,8 @@ func prepInteractiveCommand(ctx *ctx) (*exec.Cmd, error) {
 //
 // If 'cmd' does not have any spaces in it, it gets executed directly, otherwise
 // it is passed to user's shell for interpretation
-func prepareCommand(ctx *ctx) (*exec.Cmd, error) {
-	osUserName := ctx.login
+func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
+	osUserName := ctx.Login
 	// configure UID & GID of the requested OS user:
 	osUser, err := user.Lookup(osUserName)
 	if err != nil {
@@ -167,11 +167,11 @@ func prepareCommand(ctx *ctx) (*exec.Cmd, error) {
 	}
 
 	// get user's shell:
-	shell, err := shell.GetLoginShell(ctx.login)
+	shell, err := shell.GetLoginShell(ctx.Login)
 	if err != nil {
 		log.Warn(err)
 	}
-	if ctx.isTestStub {
+	if ctx.IsTestStub {
 		shell = "/bin/sh"
 	}
 
@@ -179,7 +179,7 @@ func prepareCommand(ctx *ctx) (*exec.Cmd, error) {
 	// is not set, fall back to the hostname of the first proxy we get back.
 	proxyHost := "<proxyhost>:3080"
 	if ctx.srv != nil {
-		proxies, err := ctx.srv.authService.GetProxies()
+		proxies, err := ctx.srv.GetAuthService().GetProxies()
 		if err != nil {
 			log.Errorf("Unexpected response from authService.GetProxies(): %v", err)
 		}
@@ -195,9 +195,9 @@ func prepareCommand(ctx *ctx) (*exec.Cmd, error) {
 
 	// by default, execute command using user's shell like openssh does:
 	// https://github.com/openssh/openssh-portable/blob/master/session.c
-	c := exec.Command(shell, "-c", ctx.exec.cmdName)
+	c := exec.Command(shell, "-c", ctx.Exec.CmdName)
 
-	clusterName, err := ctx.srv.authService.GetDomainName()
+	clusterName, err := ctx.srv.GetAuthService().GetDomainName()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -208,7 +208,7 @@ func prepareCommand(ctx *ctx) (*exec.Cmd, error) {
 		"HOME=" + osUser.HomeDir,
 		"USER=" + osUserName,
 		"SHELL=" + shell,
-		teleport.SSHTeleportUser + "=" + ctx.teleportUser,
+		teleport.SSHTeleportUser + "=" + ctx.TeleportUser,
 		teleport.SSHSessionWebproxyAddr + "=" + proxyHost,
 		teleport.SSHTeleportHostUUID + "=" + ctx.srv.ID(),
 		teleport.SSHTeleportClusterName + "=" + clusterName,
@@ -254,11 +254,11 @@ func prepareCommand(ctx *ctx) (*exec.Cmd, error) {
 		c.Env = append(c.Env, fmt.Sprintf("%s=%s", n, v))
 	}
 	// apply SSH_xx environment variables
-	remoteHost, remotePort, err := net.SplitHostPort(ctx.conn.RemoteAddr().String())
+	remoteHost, remotePort, err := net.SplitHostPort(ctx.Conn.RemoteAddr().String())
 	if err != nil {
 		log.Warn(err)
 	} else {
-		localHost, localPort, err := net.SplitHostPort(ctx.conn.LocalAddr().String())
+		localHost, localPort, err := net.SplitHostPort(ctx.Conn.LocalAddr().String())
 		if err != nil {
 			log.Warn(err)
 		} else {
@@ -276,31 +276,31 @@ func prepareCommand(ctx *ctx) (*exec.Cmd, error) {
 		}
 	}
 
-	// if the server allows reading in of ~/.tsh/environment read it in
-	// and pass environment variables along to new session
-	if ctx.srv.PermitUserEnvironment() {
-		filename := filepath.Join(osUser.HomeDir, ".tsh", "environment")
-		userEnvs, err := utils.ReadEnvironmentFile(filename)
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-		c.Env = append(c.Env, userEnvs...)
-	}
+	//// if the server allows reading in of ~/.tsh/environment read it in
+	//// and pass environment variables along to new session
+	//if ctx.srv.PermitUserEnvironment() {
+	//	filename := filepath.Join(osUser.HomeDir, ".tsh", "environment")
+	//	userEnvs, err := utils.ReadEnvironmentFile(filename)
+	//	if err != nil {
+	//		return nil, trace.Wrap(err)
+	//	}
+	//	c.Env = append(c.Env, userEnvs...)
+	//}
 	return c, nil
 }
 
 // start launches the given command returns (nil, nil) if successful. execResult is only used
 // to communicate an error while launching
-func (e *execResponse) start(ch ssh.Channel) (*execResult, error) {
+func (e *ExecResponse) Start(ch ssh.Channel) (*ExecResult, error) {
 	var err error
-	e.cmd, err = prepareCommand(e.ctx)
+	e.Cmd, err = prepareCommand(e.Ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	e.cmd.Stderr = ch.Stderr()
-	e.cmd.Stdout = ch
+	e.Cmd.Stderr = ch.Stderr()
+	e.Cmd.Stdout = ch
 
-	inputWriter, err := e.cmd.StdinPipe()
+	inputWriter, err := e.Cmd.StdinPipe()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -309,53 +309,53 @@ func (e *execResponse) start(ch ssh.Channel) (*execResult, error) {
 		inputWriter.Close()
 	}()
 
-	if err := e.cmd.Start(); err != nil {
-		e.ctx.Warningf("%v start failure err: %v", e, err)
-		return e.collectStatus(e.cmd, trace.ConvertSystemError(err))
+	if err := e.Cmd.Start(); err != nil {
+		e.Ctx.Warningf("%v start failure err: %v", e, err)
+		return e.CollectStatus(e.Cmd, trace.ConvertSystemError(err))
 	}
-	e.ctx.Infof("%v started", e)
+	e.Ctx.Infof("%v started", e)
 
 	return nil, nil
 }
 
-func (e *execResponse) wait() (*execResult, error) {
-	if e.cmd.Process == nil {
-		e.ctx.Errorf("no process")
+func (e *ExecResponse) Wait() (*ExecResult, error) {
+	if e.Cmd.Process == nil {
+		e.Ctx.Errorf("no process")
 	}
-	err := e.cmd.Wait()
-	return e.collectStatus(e.cmd, err)
+	err := e.Cmd.Wait()
+	return e.CollectStatus(e.Cmd, err)
 }
 
-func (e *execResponse) collectStatus(cmd *exec.Cmd, err error) (*execResult, error) {
-	status, err := collectStatus(e.cmd, err)
+func (e *ExecResponse) CollectStatus(cmd *exec.Cmd, err error) (*ExecResult, error) {
+	status, err := collectStatus(e.Cmd, err)
 	// report the result of this exec event to the audit logger
-	auditLog := e.ctx.srv.alog
+	auditLog := e.Ctx.srv.GetAuditLog()
 	if auditLog == nil {
 		return status, err
 	}
 	fields := events.EventFields{
 		events.ExecEventCommand: strings.Join(cmd.Args, " "),
-		events.EventUser:        e.ctx.teleportUser,
-		events.EventLogin:       e.ctx.login,
-		events.LocalAddr:        e.ctx.conn.LocalAddr().String(),
-		events.RemoteAddr:       e.ctx.conn.RemoteAddr().String(),
-		events.EventNamespace:   e.ctx.srv.getNamespace(),
+		events.EventUser:        e.Ctx.TeleportUser,
+		events.EventLogin:       e.Ctx.Login,
+		events.LocalAddr:        e.Ctx.Conn.LocalAddr().String(),
+		events.RemoteAddr:       e.Ctx.Conn.RemoteAddr().String(),
+		events.EventNamespace:   e.Ctx.srv.GetNamespace(),
 	}
 	if err != nil {
 		fields[events.ExecEventError] = err.Error()
 		if status != nil {
-			fields[events.ExecEventCode] = strconv.Itoa(status.code)
+			fields[events.ExecEventCode] = strconv.Itoa(status.Code)
 		}
 	}
 	auditLog.EmitAuditEvent(events.ExecEvent, fields)
 	return status, err
 }
 
-func collectStatus(cmd *exec.Cmd, err error) (*execResult, error) {
+func collectStatus(cmd *exec.Cmd, err error) (*ExecResult, error) {
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			status := exitErr.Sys().(syscall.WaitStatus)
-			return &execResult{code: status.ExitStatus(), command: cmd.Path}, nil
+			return &ExecResult{Code: status.ExitStatus(), Command: cmd.Path}, nil
 		}
 		return nil, err
 	}
@@ -363,7 +363,7 @@ func collectStatus(cmd *exec.Cmd, err error) (*execResult, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown exit status: %T(%v)", cmd.ProcessState.Sys(), cmd.ProcessState.Sys())
 	}
-	return &execResult{code: status.ExitStatus(), command: cmd.Path}, nil
+	return &ExecResult{Code: status.ExitStatus(), Command: cmd.Path}, nil
 }
 
 // getDefaultEnvPath returns the default value of PATH environment variable for

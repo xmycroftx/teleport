@@ -19,6 +19,7 @@ package srv
 import (
 	"fmt"
 	"io"
+	//"os/exec"
 	"sync"
 	"sync/atomic"
 
@@ -28,30 +29,25 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/events"
 	rsession "github.com/gravitational/teleport/lib/session"
+	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/trace"
 
 	log "github.com/sirupsen/logrus"
 )
 
-// execResult is used internally to send the result of a command execution from
-// a goroutine to SSH request handler and back to the calling client
-type execResult struct {
-	command string
-
-	// returned exec code
-	code int
-}
-
 var ctxID int32
 
 // subsystemResult is a result of execution of the subsystem
-type subsystemResult struct {
-	err error
+type SubsystemResult struct {
+	Err error
 }
 
 type Server interface {
 	ID() string
 	GetNamespace() string
+
+	LogFields(fields map[string]interface{}) log.Fields
 
 	EmitAuditEvent(string, events.EventFields)
 
@@ -63,7 +59,7 @@ type Server interface {
 // ctx holds session specific context, such as SSH auth agents
 // PTYs, and other resources. ctx can be used to attach resources
 // that should be closed once the session closes.
-type ctx struct {
+type ServerContext struct {
 	*log.Entry
 	// env is a list of environment variables passed to the session
 	env map[string]string
@@ -76,7 +72,7 @@ type ctx struct {
 	id int
 
 	// SSH connection
-	conn *ssh.ServerConn
+	Conn *ssh.ServerConn
 
 	sync.RWMutex
 
@@ -93,10 +89,10 @@ type ctx struct {
 	// result channel will be used by remote executions
 	// that are processed in separate process, once the result is collected
 	// they would send the result to this channel
-	result chan execResult
+	Result chan ExecResult
 
 	// close used by channel operations asking to close the session
-	subsystemResultC chan subsystemResult
+	SubsystemResultC chan SubsystemResult
 
 	// closers is a list of io.Closer that will be called when session closes
 	// this is handy as sometimes client closes session, in this case resources
@@ -104,40 +100,74 @@ type ctx struct {
 	closers []io.Closer
 
 	// teleportUser is a teleport user that was used to log in
-	teleportUser string
+	TeleportUser string
 
 	// login is operating system user login chosen by the user
-	login string
+	Login string
 
 	// isTestStub is set to True by tests
-	isTestStub bool
+	IsTestStub bool
 
 	// session, if there's an active one
 	session *session
 
 	// full command asked to be executed in this context
-	//exec *execResponse
+	Exec *ExecResponse
 
 	// clusterName is the name of the cluster current user
 	// is authenticated with
-	clusterName string
+	ClusterName string
+}
+
+//func (c *ServerContext) ServerConn() *ssh.ServerConn {
+//	return c.conn
+//}
+
+func (c *ServerContext) JoinOrCreateSession(reg *SessionRegistry) error {
+	// As SSH conversation progresses, at some point a session will be created and
+	// its ID will be added to the environment
+	ssid, found := c.GetEnv(sshutils.SessionEnvVar)
+	if !found {
+		return nil
+	}
+	// make sure whatever session is requested is a valid session
+	_, err := rsession.ParseID(ssid)
+	if err != nil {
+		return trace.BadParameter("invalid session id")
+	}
+
+	findSession := func() (*session, bool) {
+		reg.Lock()
+		defer reg.Unlock()
+		return reg.findSession(rsession.ID(ssid))
+	}
+
+	// update ctx with a session ID
+	c.session, _ = findSession()
+	if c.session == nil {
+		log.Debugf("[SSH] will create new session for SSH connection %v", c.Conn.RemoteAddr())
+	} else {
+		log.Debugf("[SSH] will join session %v for SSH connection %v", c.session, c.Conn.RemoteAddr())
+	}
+
+	return nil
 }
 
 // addCloser adds any closer in ctx that will be called
 // whenever server closes session channel
-func (c *ctx) addCloser(closer io.Closer) {
+func (c *ServerContext) AddCloser(closer io.Closer) {
 	c.Lock()
 	defer c.Unlock()
 	c.closers = append(c.closers, closer)
 }
 
-func (c *ctx) getAgent() agent.Agent {
+func (c *ServerContext) GetAgent() agent.Agent {
 	c.RLock()
 	defer c.RUnlock()
 	return c.agent
 }
 
-func (c *ctx) setAgent(a agent.Agent, ch ssh.Channel) {
+func (c *ServerContext) SetAgent(a agent.Agent, ch ssh.Channel) {
 	c.Lock()
 	defer c.Unlock()
 	if c.agentCh != nil {
@@ -148,15 +178,15 @@ func (c *ctx) setAgent(a agent.Agent, ch ssh.Channel) {
 	c.agent = a
 }
 
-//func (c *ctx) getTerm() *terminal {
-func (c *ctx) getTerm() Terminal {
+//func (c *ServerContext) getTerm() *terminal {
+func (c *ServerContext) GetTerm() Terminal {
 	c.RLock()
 	defer c.RUnlock()
 	return c.term
 }
 
-//func (c *ctx) setTerm(t *terminal) {
-func (c *ctx) setTerm(t Terminal) {
+//func (c *ServerContext) setTerm(t *terminal) {
+func (c *ServerContext) SetTerm(t Terminal) {
 	c.Lock()
 	defer c.Unlock()
 	c.term = t
@@ -164,7 +194,7 @@ func (c *ctx) setTerm(t Terminal) {
 
 // takeClosers returns all resources that should be closed and sets the properties to null
 // we do this to avoid calling Close() under lock to avoid potential deadlocks
-func (c *ctx) takeClosers() []io.Closer {
+func (c *ServerContext) takeClosers() []io.Closer {
 	// this is done to avoid any operation holding the lock for too long
 	c.Lock()
 	defer c.Unlock()
@@ -182,59 +212,59 @@ func (c *ctx) takeClosers() []io.Closer {
 	return closers
 }
 
-func (c *ctx) Close() error {
+func (c *ServerContext) Close() error {
 	return closeAll(c.takeClosers()...)
 }
 
-func (c *ctx) sendResult(r execResult) {
+func (c *ServerContext) SendResult(r ExecResult) {
 	select {
-	case c.result <- r:
+	case c.Result <- r:
 	default:
 		log.Infof("blocked on sending exec result %v", r)
 	}
 }
 
-func (c *ctx) sendSubsystemResult(err error) {
+func (c *ServerContext) SendSubsystemResult(err error) {
 	select {
-	case c.subsystemResultC <- subsystemResult{err: err}:
+	case c.SubsystemResultC <- SubsystemResult{Err: err}:
 	default:
 		c.Infof("blocked on sending close request")
 	}
 }
 
-func (c *ctx) String() string {
-	return fmt.Sprintf("sess(%v->%v, user=%v, id=%v)", c.conn.RemoteAddr(), c.conn.LocalAddr(), c.conn.User(), c.id)
+func (c *ServerContext) String() string {
+	return fmt.Sprintf("sess(%v->%v, user=%v, id=%v)", c.Conn.RemoteAddr(), c.Conn.LocalAddr(), c.Conn.User(), c.id)
 }
 
-func (c *ctx) setEnv(key, val string) {
-	c.Debugf("setEnv(%v=%v)", key, val)
+func (c *ServerContext) SetEnv(key, val string) {
+	c.Debugf("SetEnv(%v=%v)", key, val)
 	c.env[key] = val
 }
 
-func (c *ctx) getEnv(key string) (string, bool) {
+func (c *ServerContext) GetEnv(key string) (string, bool) {
 	val, ok := c.env[key]
 	return val, ok
 }
 
-func newCtx(srv *Server, conn *ssh.ServerConn) *ctx {
-	ctx := &ctx{
+func NewServerContext(srv Server, conn *ssh.ServerConn) *ServerContext {
+	ctx := &ServerContext{
 		env:              make(map[string]string),
-		conn:             conn,
+		Conn:             conn,
 		id:               int(atomic.AddInt32(&ctxID, int32(1))),
-		result:           make(chan execResult, 10),
-		subsystemResultC: make(chan subsystemResult, 10),
-		srv:              *srv,
-		teleportUser:     conn.Permissions.Extensions[utils.CertTeleportUser],
-		clusterName:      conn.Permissions.Extensions[utils.CertTeleportClusterName],
-		login:            conn.User(),
+		Result:           make(chan ExecResult, 10),
+		SubsystemResultC: make(chan SubsystemResult, 10),
+		srv:              srv,
+		TeleportUser:     conn.Permissions.Extensions[utils.CertTeleportUser],
+		ClusterName:      conn.Permissions.Extensions[utils.CertTeleportClusterName],
+		Login:            conn.User(),
 	}
-	//ctx.Entry = log.WithFields(srv.logFields(log.Fields{
-	//	"local":        conn.LocalAddr(),
-	//	"remote":       conn.RemoteAddr(),
-	//	"login":        ctx.login,
-	//	"teleportUser": ctx.teleportUser,
-	//	"id":           ctx.id,
-	//}))
+	ctx.Entry = log.WithFields(srv.LogFields(log.Fields{
+		"local":        conn.LocalAddr(),
+		"remote":       conn.RemoteAddr(),
+		"login":        ctx.Login,
+		"teleportUser": ctx.TeleportUser,
+		"id":           ctx.id,
+	}))
 	return ctx
 }
 

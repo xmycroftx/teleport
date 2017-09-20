@@ -12,10 +12,9 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
 */
 
-package srv
+package std
 
 import (
 	"bytes"
@@ -30,6 +29,7 @@ import (
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/srv"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
 
@@ -114,7 +114,7 @@ func (t *proxySubsys) String() string {
 
 // start is called by Golang's ssh when it needs to engage this sybsystem (typically to establish
 // a mapping connection between a client & remote node we're proxying to)
-func (t *proxySubsys) start(sconn *ssh.ServerConn, ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (t *proxySubsys) start(sconn *ssh.ServerConn, ch ssh.Channel, req *ssh.Request, ctx *srv.ServerContext) error {
 	log.Debugf("[PROXY] subsystem(from: %v, to: %v)", sconn.RemoteAddr(), sconn.LocalAddr())
 	var (
 		site       reversetunnel.RemoteSite
@@ -125,7 +125,7 @@ func (t *proxySubsys) start(sconn *ssh.ServerConn, ch ssh.Channel, req *ssh.Requ
 	// did the client pass us a true client IP ahead of time via an environment variable?
 	// (usually the web client would do that)
 	ctx.Lock()
-	trueClientIP, ok := ctx.env[sshutils.TrueClientAddrVar]
+	trueClientIP, ok := ctx.GetEnv(sshutils.TrueClientAddrVar)
 	ctx.Unlock()
 	if ok {
 		a, err := utils.ParseAddr(trueClientIP)

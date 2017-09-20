@@ -25,6 +25,7 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/srv/fwd"
 
 	"github.com/gravitational/trace"
 	log "github.com/sirupsen/logrus"
@@ -95,6 +96,7 @@ func (s *localSite) GetLastConnected() time.Time {
 // Dial dials a given host in this site (cluster).
 func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
 	s.log.Debugf("[PROXY] localSite.Dial(from=%v, to=%v)", from, to)
+	fwd.Dial()
 	return net.Dial(to.Network(), to.String())
 }
 
