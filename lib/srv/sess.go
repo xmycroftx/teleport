@@ -19,7 +19,7 @@ package srv
 import (
 	"fmt"
 	"io"
-	//"os/exec"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -523,6 +523,10 @@ func (r *sessionRecorder) Close() error {
 	return r.alog.Close()
 }
 
+func foo() (*exec.Cmd, error) {
+	return nil, nil
+}
+
 // start starts a new interactive process (or a shell) in the current session
 func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 	// create a new "party" (connected client)
@@ -540,11 +544,13 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 			return trace.Wrap(err)
 		}
 	}
-	// prepare environment & Launch shell:
-	cmd, err := prepInteractiveCommand(ctx)
+	//// prepare environment & Launch shell:
+	//cmd, err := prepInteractiveCommand(ctx)
+	cmd, err := foo()
 	if err != nil {
 		return trace.Wrap(err)
 	}
+
 	ctx.Debugf("session exec: %#v", cmd)
 	if err := s.term.Run(cmd); err != nil {
 		ctx.Errorf("shell command (%v %v) failed: %v", cmd.Path, cmd.Args, err)

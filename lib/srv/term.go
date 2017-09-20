@@ -54,7 +54,7 @@ type remoteTerminal struct {
 	ptyBuffer   *ptyBuffer
 }
 
-func newRemoteTerminal(req *ssh.Request) (*remoteTerminal, *rsession.TerminalParams, error) {
+func NewRemoteTerminal(req *ssh.Request) (*remoteTerminal, *rsession.TerminalParams, error) {
 	r, err := parsePTYReq(req)
 	if err != nil {
 		return nil, nil, trace.Wrap(err)

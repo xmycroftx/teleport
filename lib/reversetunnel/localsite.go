@@ -96,8 +96,24 @@ func (s *localSite) GetLastConnected() time.Time {
 // Dial dials a given host in this site (cluster).
 func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
 	s.log.Debugf("[PROXY] localSite.Dial(from=%v, to=%v)", from, to)
-	fwd.Dial()
-	return net.Dial(to.Network(), to.String())
+	log.Errorf("localSite.Dial")
+
+	fakeServer, err := fwd.New(s.client)
+	if err != nil {
+		log.Errorf("fwd.New: error: %v", err)
+		return nil, err
+	}
+	log.Errorf("fakeServer: %v", fakeServer)
+
+	server, client := net.Pipe()
+
+	log.Errorf("trying to dial")
+	go fakeServer.Dial(server)
+
+	log.Errorf("localSite.Dial: done")
+	return client, nil
+
+	//return net.Dial(to.Network(), to.String())
 }
 
 func findServer(addr string, servers []services.Server) (services.Server, error) {
