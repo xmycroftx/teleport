@@ -366,7 +366,7 @@ func newSession(id rsession.ID, r *SessionRegistry, context *ServerContext) (*se
 	return sess, nil
 }
 
-func (r *SessionRegistry) PushTermSize(sconn *ssh.ServerConn, ch ssh.Channel) error {
+func (r *SessionRegistry) PushTermSizeToParty(sconn *ssh.ServerConn, ch ssh.Channel) error {
 	party := r.partyForConnection(sconn)
 	if party == nil {
 		return trace.BadParameter("no part found")
@@ -523,10 +523,6 @@ func (r *sessionRecorder) Close() error {
 	return r.alog.Close()
 }
 
-func foo() (*exec.Cmd, error) {
-	return nil, nil
-}
-
 // start starts a new interactive process (or a shell) in the current session
 func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 	// create a new "party" (connected client)
@@ -546,7 +542,7 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 	}
 
 	if err := s.term.Run(ctx); err != nil {
-		//ctx.Errorf("shell command (%v %v) failed: %v", cmd.Path, cmd.Args, err)
+		ctx.Errorf("shell command (%v) failed: %v", ctx.Exec.CmdName, err)
 		return trace.ConvertSystemError(err)
 	}
 	if err := s.addParty(p); err != nil {

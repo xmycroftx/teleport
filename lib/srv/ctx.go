@@ -62,11 +62,11 @@ type Server interface {
 // that should be closed once the session closes.
 type ServerContext struct {
 	*log.Entry
+
 	// env is a list of environment variables passed to the session
 	env map[string]string
 
 	// srv is a pointer to the server holding the context
-	//srv *Server
 	srv Server
 
 	// server specific incremental session id
@@ -78,7 +78,6 @@ type ServerContext struct {
 	sync.RWMutex
 
 	// term holds PTY if it was requested by the session
-	//term *terminal
 	term Terminal
 
 	// agent is a client to remote SSH agent

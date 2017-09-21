@@ -828,20 +828,11 @@ func (s *Server) handleTerminalResize(sconn *ssh.ServerConn, ch ssh.Channel) {
 	// the party may not be immediately available for this connection,
 	// keep asking for a full second:
 	for i := 0; i < 10; i++ {
-		err := s.reg.PushTermSize(sconn, ch)
+		err := s.reg.PushTermSizeToParty(sconn, ch)
 		if err != nil {
 			time.Sleep(time.Millisecond * 100)
 			continue
 		}
-
-		//party := s.reg.PartyForConnection(sconn)
-		//if party == nil {
-		//	time.Sleep(time.Millisecond * 100)
-		//	continue
-		//}
-		//// this starts a loop which will keep updating the terminal
-		//// size for every SSH write back to this connection
-		//party.termSizePusher(ch)
 		return
 	}
 }
@@ -1178,25 +1169,6 @@ func replyError(ch ssh.Channel, req *ssh.Request, err error) {
 		req.Reply(false, message)
 	}
 }
-
-//func closeAll(closers ...io.Closer) error {
-//	var err error
-//	for _, cl := range closers {
-//		if cl == nil {
-//			continue
-//		}
-//		if e := cl.Close(); e != nil {
-//			err = e
-//		}
-//	}
-//	return err
-//}
-//
-//type closerFunc func() error
-//
-//func (f closerFunc) Close() error {
-//	return f()
-//}
 
 func parseWinChange(req *ssh.Request) (*rsession.TerminalParams, error) {
 	var r sshutils.WinChangeReqParams
