@@ -144,8 +144,8 @@ func NewTunnel(addr utils.NetAddr,
 	if err != nil {
 		return nil, err
 	}
-	tunnel.userCertChecker = ssh.CertChecker{IsUserAuthority: tunnel.isUserAuthority}
-	tunnel.hostCertChecker = ssh.CertChecker{IsHostAuthority: tunnel.isHostAuthority}
+	tunnel.userCertChecker = ssh.CertChecker{IsAuthority: tunnel.isUserAuthority}
+	tunnel.hostCertChecker = ssh.CertChecker{IsAuthority: tunnel.isHostAuthority}
 	return tunnel, nil
 }
 
@@ -219,7 +219,7 @@ func (s *AuthTunnel) HandleNewChan(_ net.Conn, sconn *ssh.ServerConn, nch ssh.Ne
 	}
 }
 
-func (s *AuthTunnel) isHostAuthority(auth ssh.PublicKey, address string) bool {
+func (s *AuthTunnel) isHostAuthority(auth ssh.PublicKey) bool {
 	domainName, err := s.authServer.GetDomainName()
 	if err != nil {
 		return false

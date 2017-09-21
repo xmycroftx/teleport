@@ -541,7 +541,8 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 		ctx.SetTerm(nil)
 	} else {
 		var err error
-		if s.term, err = NewLocalTerminal(ctx); err != nil {
+		//if s.term, err = NewLocalTerminal(ctx); err != nil {
+		if s.term, err = NewRemoteTerminal(ctx); err != nil {
 			ctx.Infof("handleShell failed to create term: %v", err)
 			return trace.Wrap(err)
 		}

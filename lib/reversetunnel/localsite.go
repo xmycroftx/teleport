@@ -25,7 +25,7 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/services"
-	//"github.com/gravitational/teleport/lib/srv/forward"
+	"github.com/gravitational/teleport/lib/srv/forward"
 
 	"github.com/gravitational/trace"
 	log "github.com/sirupsen/logrus"
@@ -96,22 +96,22 @@ func (s *localSite) GetLastConnected() time.Time {
 // Dial dials a given host in this site (cluster).
 func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
 	s.log.Debugf("[PROXY] localSite.Dial(from=%v, to=%v)", from, to)
-	//fakeServer, err := forward.New(s.client)
-	//if err != nil {
-	//	log.Errorf("fwd.New: error: %v", err)
-	//	return nil, err
-	//}
-	//log.Errorf("fakeServer: %v", fakeServer)
+	fakeServer, err := forward.New(s.client, to.String())
+	if err != nil {
+		log.Errorf("fwd.New: error: %v", err)
+		return nil, err
+	}
+	log.Errorf("fakeServer: %v", fakeServer)
 
-	//server, client := net.Pipe()
+	server, client := net.Pipe()
 
-	//log.Errorf("trying to dial")
-	//go fakeServer.Dial(server)
+	log.Errorf("trying to dial")
+	go fakeServer.Dial(server)
 
-	//log.Errorf("localSite.Dial: done")
-	//return client, nil
+	log.Errorf("localSite.Dial: done")
+	return client, nil
 
-	return net.Dial(to.Network(), to.String())
+	//return net.Dial(to.Network(), to.String())
 }
 
 func findServer(addr string, servers []services.Server) (services.Server, error) {

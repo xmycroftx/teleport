@@ -28,14 +28,17 @@ type fakeServer struct {
 	remoteHostSigner ssh.Signer
 	remoteHostPort   string
 
+	addr string
+
 	alog          events.IAuditLog
 	authService   auth.AccessPoint
 	reg           *psrv.SessionRegistry
 	sessionServer rsession.Service
 }
 
-func New(authClient auth.ClientI) (*fakeServer, error) {
+func New(authClient auth.ClientI, addr string) (*fakeServer, error) {
 	s := &fakeServer{
+		addr:          addr,
 		alog:          authClient,
 		authService:   authClient,
 		sessionServer: authClient,
@@ -50,6 +53,10 @@ func (f *fakeServer) ID() string {
 
 func (f *fakeServer) GetNamespace() string {
 	return "default"
+}
+
+func (f *fakeServer) AdvertiseAddr() string {
+	return f.addr
 }
 
 func (f *fakeServer) LogFields(fields map[string]interface{}) log.Fields {
@@ -345,8 +352,7 @@ func (f *fakeServer) handlePtyReq(ctx *psrv.ServerContext, channel ssh.Channel, 
 
 	term := ctx.GetTerm()
 	if term == nil {
-		//term, _, err = psrv.NewRemoteTerminal(req)
-		term, err = psrv.NewLocalTerminal()
+		term, err = psrv.NewRemoteTerminal(ctx)
 		if err != nil {
 			return err
 		}
@@ -438,7 +444,7 @@ func (f *fakeServer) handleAgentForward(ctx *psrv.ServerContext, channel ssh.Cha
 	}
 	ctx.SetAgent(agent.NewClient(authChannel), channel)
 
-	//close(ctx.agentReady)
+	close(ctx.AgentReady)
 
 	return nil
 }

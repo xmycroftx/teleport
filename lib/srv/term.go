@@ -28,6 +28,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	//"golang.org/x/crypto/ssh/agent"
 
+	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
@@ -253,24 +254,40 @@ type remoteTerminal struct {
 	ptyBuffer   *ptyBuffer
 }
 
+// TODO(russjones): Use GetCertAuthority instead.
+func getHostCA(authService auth.AccessPoint, clusterName string) (services.CertAuthority, error) {
+	cas, err := authService.GetCertAuthorities(services.HostCA, false)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	for _, ca := range cas {
+		if ca.GetClusterName() == clusterName {
+			return ca, nil
+		}
+	}
+
+	return nil, trace.NotFound("unable to find host ca for %v", clusterName)
+}
+
 func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 	checker := &ssh.CertChecker{
-		IsHostAuthority: func(p ssh.PublicKey, addr string) bool {
-			caid := services.CertAuthID{DomainName: ctx.ClusterName, Type: services.HostCA}
-			ca, err := ctx.srv.GetAuthService().GetCertAuthority(caid, false)
+		// TODO(russjones): Revendor golang.org/x/crypto/ssh.
+		//IsHostAuthority: func(p ssh.PublicKey, addr string) bool {
+		IsAuthority: func(p ssh.PublicKey) bool {
+			ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
 			if err != nil {
 				return false
 			}
+
 			checkers, err := ca.Checkers()
 			if err != nil {
 				return false
 			}
 
 			for _, checker := range checkers {
-				addrMatch := subtle.ConstantTimeCompare([]byte(ctx.srv.AdvertiseAddr()), []byte(addr)) == 1
 				caMatch := subtle.ConstantTimeCompare(checker.Marshal(), p.Marshal()) == 1
-
-				if addrMatch && caMatch {
+				if caMatch {
 					return true
 				}
 			}
@@ -278,10 +295,10 @@ func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 		},
 	}
 
+	log.Errorf("waiting for agent to be ready")
 	// TODO(russjones): Wait for the agent to be ready or a timeout.
-	select {
-	case <-ctx.agentReady:
-	}
+	<-ctx.AgentReady
+	log.Errorf("agent ready!")
 	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
 
 	clientConfig := &ssh.ClientConfig{
@@ -310,6 +327,10 @@ func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 	}
 
 	return t, nil
+}
+
+func (t *remoteTerminal) AddParty(delta int) {
+	t.wg.Add(delta)
 }
 
 type ptyBuffer struct {
@@ -359,13 +380,24 @@ func (t *remoteTerminal) Run() error {
 	return nil
 }
 
-func (t *remoteTerminal) Wait() error {
+func (t *remoteTerminal) Wait() (*ExecResult, error) {
 	t.wg.Wait()
+	return &ExecResult{
+		Code:    0,
+		Command: "",
+	}, nil
+}
+
+func (t *remoteTerminal) Kill() error {
 	return nil
 }
 
 func (t *remoteTerminal) PTY() io.ReadWriter {
 	return t.ptyBuffer
+}
+
+func (t *remoteTerminal) TTY() *os.File {
+	return nil
 }
 
 func (t *remoteTerminal) Close() error {
@@ -385,11 +417,10 @@ func (t *remoteTerminal) GetWinSize() (*term.Winsize, error) {
 }
 
 func (t *remoteTerminal) SetWinSize(params rsession.TerminalParams) error {
-	// TODO(russjones): Revendor the SSH library so so we can update the window
-	// size here.
+	// TODO(russjones): Revendor golang.org/x/crypto/ssh.
 	//err = session.WindowChange(params.H, params.W)
 	//if err != nil {
-	//    return nil, nil, err
+	//    return err
 	//}
 	t.params = params
 	return nil
