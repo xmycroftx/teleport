@@ -19,6 +19,7 @@ package srv
 import (
 	"io"
 	//"net"
+	"crypto/subtle"
 	"os"
 	"os/exec"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	//"golang.org/x/crypto/ssh/agent"
 
+	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
 
@@ -40,9 +42,11 @@ import (
 // remote) PTY, such as resizing windows, executing commands with a PTY, and
 // cleaning up.
 type Terminal interface {
-	AddWaitCounter(delta int)
+	// AddParty adds another participant to this terminal. We will keep the
+	// Terminal open until all participants have left.
+	AddParty(delta int)
 
-	Run(*ServerContext) error
+	Run() error
 	Wait() (*ExecResult, error)
 	Kill() error
 
@@ -62,32 +66,38 @@ type terminal struct {
 	mu sync.Mutex
 
 	cmd *exec.Cmd
+	ctx *ServerContext
 
-	pty    *os.File
-	tty    *os.File
-	err    error
-	done   bool
+	pty *os.File
+	tty *os.File
+	//err    error
+	//done   bool
 	params rsession.TerminalParams
 }
 
 // NewLocalTerminal creates and returns a local PTY.
-func NewLocalTerminal() (*terminal, error) {
+func NewLocalTerminal(ctx *ServerContext) (*terminal, error) {
 	pty, tty, err := pty.Open()
 	if err != nil {
 		log.Warnf("could not start pty (%s)", err)
 		return nil, err
 	}
-	return &terminal{pty: pty, tty: tty, err: err}, nil
+	return &terminal{
+		ctx: ctx,
+		pty: pty,
+		tty: tty,
+		//err: err,
+	}, nil
 }
 
-func (t *terminal) AddWaitCounter(delta int) {
+func (t *terminal) AddParty(delta int) {
 	t.wg.Add(delta)
 }
 
-func (t *terminal) Run(ctx *ServerContext) error {
+func (t *terminal) Run() error {
 	defer t.closeTTY()
 
-	cmd, err := prepInteractiveCommand(ctx)
+	cmd, err := prepInteractiveCommand(t.ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -132,7 +142,8 @@ func (t *terminal) Kill() error {
 	if t.cmd.Process != nil {
 		if err := t.cmd.Process.Kill(); err != nil {
 			if err.Error() != "os: process already finished" {
-				log.Error(trace.DebugReport(err))
+				//log.Error(trace.DebugReport(err))
+				return trace.Wrap(err)
 			}
 		}
 	}
@@ -207,7 +218,7 @@ func (t *terminal) closePTY() {
 	defer t.mu.Unlock()
 	defer log.Debugf("PTY is closed")
 
-	// wait until all copying is over
+	// wait until all copying is over (all participants have left)
 	t.wg.Wait()
 
 	t.pty.Close()
@@ -230,151 +241,160 @@ func ParsePTYReq(req *ssh.Request) (*sshutils.PTYReqParams, error) {
 	return &r, nil
 }
 
-//type remoteTerminal struct {
-//	wg sync.WaitGroup
-//	mu sync.Mutex
-//
-//	session     *ssh.Session
-//	params      rsession.TerminalParams
-//	sessionDone chan bool
-//	ptyBuffer   *ptyBuffer
-//}
-//
-//func NewRemoteTerminal(req *ssh.Request) (*remoteTerminal, *rsession.TerminalParams, error) {
-//	r, err := parsePTYReq(req)
-//	if err != nil {
-//		return nil, nil, trace.Wrap(err)
-//	}
-//	log.Debugf("Parsed pty request pty(env=%v, w=%v, h=%v)", r.Env, r.W, r.H)
-//
-//	params, err := rsession.NewTerminalParamsFromUint32(r.W, r.H)
-//	if err != nil {
-//		return nil, nil, trace.Wrap(err)
-//	}
-//
-//	// TODO(russjones): Get the agent from the user here.
-//	systemAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
-//	if err != nil {
-//		return nil, nil, err
-//	}
-//	authMethod := ssh.PublicKeysCallback(agent.NewClient(systemAgent).Signers)
-//
-//	clientConfig := &ssh.ClientConfig{
-//		User: "rjones",
-//		Auth: []ssh.AuthMethod{
-//			authMethod,
-//		},
-//		// TODO(russjones): Use a HostKeyCallback here to check the host key of the
-//		// client we are connecting to.
-//	}
-//
-//	// TODO(russjones): Add a timeout here. Add real remote host:port here.
-//	// This should probably be passed into this function, so we don't always dial
-//	// to the remote node.
-//	client, err := ssh.Dial("tcp", "localhost:22", clientConfig)
-//	if err != nil {
-//		return nil, nil, err
-//	}
-//
-//	session, err := client.NewSession()
-//	if err != nil {
-//		return nil, nil, err
-//	}
-//
-//	t := &remoteTerminal{
-//		session:     session,
-//		sessionDone: make(chan bool),
-//		ptyBuffer:   &ptyBuffer{},
-//	}
-//	t.SetWinSize(*params)
-//
-//	return t, params, nil
-//}
-//
-//type ptyBuffer struct {
-//	r io.Reader
-//	w io.Writer
-//}
-//
-//func (b *ptyBuffer) Read(p []byte) (n int, err error) {
-//	return b.r.Read(p)
-//}
-//
-//func (b *ptyBuffer) Write(p []byte) (n int, err error) {
-//	return b.w.Write(p)
-//}
-//
-//// TODO(russjones): We don't care what c actually is here.
-//func (t *remoteTerminal) Run(c *exec.Cmd) error {
-//	// combine stdout and stderr
-//	stdout, err := t.session.StdoutPipe()
-//	if err != nil {
-//		return trace.Wrap(err)
-//	}
-//	t.session.Stderr = t.session.Stdout
-//	stdin, err := t.session.StdinPipe()
-//	if err != nil {
-//		return trace.Wrap(err)
-//	}
-//
-//	t.ptyBuffer = &ptyBuffer{
-//		r: stdout,
-//		w: stdin,
-//	}
-//
-//	modes := ssh.TerminalModes{
-//		ssh.ECHO:          1,
-//		ssh.TTY_OP_ISPEED: 14400,
-//		ssh.TTY_OP_OSPEED: 14400,
-//	}
-//
-//	if err := t.session.RequestPty("xterm", 80, 40, modes); err != nil {
-//		return err
-//	}
-//
-//	if err := t.session.Shell(); err != nil {
-//		return err
-//	}
-//
-//	return nil
-//}
-//
-//func (t *remoteTerminal) Wait() error {
-//	<-t.sessionDone
-//
-//	// TODO(russjones): Who closes the channel here?
-//
-//	return nil
-//}
-//
-//func (t *remoteTerminal) ReadWriter() io.ReadWriter {
-//	return t.ptyBuffer
-//}
-//
-//func (t *remoteTerminal) Close() error {
-//	err := t.session.Close()
-//	if err != nil {
-//		return trace.Wrap(err)
-//	}
-//
-//	return nil
-//}
-//
-//func (t *remoteTerminal) GetWinSize() (*term.Winsize, error) {
-//	return t.params.Winsize(), nil
-//}
-//
-//func (t *remoteTerminal) SetWinSize(params rsession.TerminalParams) error {
-//	// TODO(russjones): Revendor the SSH library so so we can update the window
-//	// size here.
-//	//err = session.WindowChange(params.H, params.W)
-//	//if err != nil {
-//	//    return nil, nil, err
-//	//}
-//	t.params = params
-//	return nil
-//}
-//
-//func (t *remoteTerminal) GetTerminalParams() rsession.TerminalParams {
-//	return t.params
-//}
+type remoteTerminal struct {
+	wg sync.WaitGroup
+	mu sync.Mutex
+
+	ctx *ServerContext
+
+	session     *ssh.Session
+	params      rsession.TerminalParams
+	sessionDone chan bool
+	ptyBuffer   *ptyBuffer
+}
+
+func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
+	checker := &ssh.CertChecker{
+		IsHostAuthority: func(p ssh.PublicKey, addr string) bool {
+			caid := services.CertAuthID{DomainName: ctx.ClusterName, Type: services.HostCA}
+			ca, err := ctx.srv.GetAuthService().GetCertAuthority(caid, false)
+			if err != nil {
+				return false
+			}
+			checkers, err := ca.Checkers()
+			if err != nil {
+				return false
+			}
+
+			for _, checker := range checkers {
+				addrMatch := subtle.ConstantTimeCompare([]byte(ctx.srv.AdvertiseAddr()), []byte(addr)) == 1
+				caMatch := subtle.ConstantTimeCompare(checker.Marshal(), p.Marshal()) == 1
+
+				if addrMatch && caMatch {
+					return true
+				}
+			}
+			return false
+		},
+	}
+
+	// TODO(russjones): Wait for the agent to be ready or a timeout.
+	select {
+	case <-ctx.agentReady:
+	}
+	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
+
+	clientConfig := &ssh.ClientConfig{
+		User: ctx.Login,
+		Auth: []ssh.AuthMethod{
+			authMethod,
+		},
+		HostKeyCallback: checker.CheckHostKey,
+	}
+
+	// TODO(russjones): Add a timeout here.
+	client, err := ssh.Dial("tcp", ctx.srv.AdvertiseAddr(), clientConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	session, err := client.NewSession()
+	if err != nil {
+		return nil, err
+	}
+
+	t := &remoteTerminal{
+		session:     session,
+		sessionDone: make(chan bool),
+		ptyBuffer:   &ptyBuffer{},
+	}
+
+	return t, nil
+}
+
+type ptyBuffer struct {
+	r io.Reader
+	w io.Writer
+}
+
+func (b *ptyBuffer) Read(p []byte) (n int, err error) {
+	return b.r.Read(p)
+}
+
+func (b *ptyBuffer) Write(p []byte) (n int, err error) {
+	return b.w.Write(p)
+}
+
+func (t *remoteTerminal) Run() error {
+	// combine stdout and stderr
+	stdout, err := t.session.StdoutPipe()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	t.session.Stderr = t.session.Stdout
+	stdin, err := t.session.StdinPipe()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	t.ptyBuffer = &ptyBuffer{
+		r: stdout,
+		w: stdin,
+	}
+
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}
+
+	if err := t.session.RequestPty("xterm", t.params.W, t.params.H, modes); err != nil {
+		return trace.Wrap(err)
+	}
+
+	if err := t.session.Shell(); err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
+}
+
+func (t *remoteTerminal) Wait() error {
+	t.wg.Wait()
+	return nil
+}
+
+func (t *remoteTerminal) PTY() io.ReadWriter {
+	return t.ptyBuffer
+}
+
+func (t *remoteTerminal) Close() error {
+	// wait until all participants are done copying
+	t.wg.Wait()
+
+	err := t.session.Close()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
+}
+
+func (t *remoteTerminal) GetWinSize() (*term.Winsize, error) {
+	return t.params.Winsize(), nil
+}
+
+func (t *remoteTerminal) SetWinSize(params rsession.TerminalParams) error {
+	// TODO(russjones): Revendor the SSH library so so we can update the window
+	// size here.
+	//err = session.WindowChange(params.H, params.W)
+	//if err != nil {
+	//    return nil, nil, err
+	//}
+	t.params = params
+	return nil
+}
+
+func (t *remoteTerminal) GetTerminalParams() rsession.TerminalParams {
+	return t.params
+}

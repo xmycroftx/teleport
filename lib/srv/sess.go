@@ -19,7 +19,6 @@ package srv
 import (
 	"fmt"
 	"io"
-	"os/exec"
 	"sync"
 	"time"
 
@@ -542,13 +541,13 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 		ctx.SetTerm(nil)
 	} else {
 		var err error
-		if s.term, err = NewLocalTerminal(); err != nil {
+		if s.term, err = NewLocalTerminal(ctx); err != nil {
 			ctx.Infof("handleShell failed to create term: %v", err)
 			return trace.Wrap(err)
 		}
 	}
 
-	if err := s.term.Run(ctx); err != nil {
+	if err := s.term.Run(); err != nil {
 		ctx.Errorf("shell command (%v) failed: %v", ctx.Exec.CmdName, err)
 		return trace.ConvertSystemError(err)
 	}
@@ -585,10 +584,10 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 	go s.pollAndSync()
 
 	// Pipe session to shell and visa-versa capturing input and output
-	s.term.AddWaitCounter(1)
+	s.term.AddParty(1)
 	go func() {
 		// notify terminal about a copy process going on
-		defer s.term.AddWaitCounter(-1)
+		defer s.term.AddParty(-1)
 		io.Copy(s.writer, s.term.PTY())
 		log.Infof("session.io.copy() stopped")
 	}()
@@ -768,7 +767,7 @@ func (s *session) addParty(p *party) error {
 	// (output will go to it)
 	s.writer.addWriter(string(p.id), p, true)
 	p.ctx.AddCloser(p)
-	s.term.AddWaitCounter(1)
+	s.term.AddParty(1)
 
 	// update session on the session server
 	storageUpdate := func(db rsession.Service) {
@@ -799,7 +798,7 @@ func (s *session) addParty(p *party) error {
 
 	// this goroutine keeps pumping party's input into the session
 	go func() {
-		defer s.term.AddWaitCounter(-1)
+		defer s.term.AddParty(-1)
 		_, err := io.Copy(s.term.PTY(), p)
 		p.ctx.Infof("party.io.copy(%v) closed", p.id)
 		if err != nil {

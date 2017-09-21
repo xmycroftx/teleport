@@ -49,6 +49,9 @@ type AccessPoint interface {
 	// GetProxies returns a list of proxy servers registered in the cluster
 	GetProxies() ([]services.Server, error)
 
+	// GetCertAuthority returns a single cert authority.
+	GetCertAuthority(services.CertAuthID, bool) (services.CertAuthority, error)
+
 	// GetCertAuthorities returns a list of cert authorities
 	GetCertAuthorities(caType services.CertAuthType, loadKeys bool) ([]services.CertAuthority, error)
 

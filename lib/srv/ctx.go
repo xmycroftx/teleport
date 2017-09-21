@@ -46,6 +46,7 @@ type SubsystemResult struct {
 type Server interface {
 	ID() string
 	GetNamespace() string
+	AdvertiseAddr() string
 
 	LogFields(fields map[string]interface{}) log.Fields
 	PermitUserEnvironment() bool
@@ -85,6 +86,8 @@ type ServerContext struct {
 
 	// agentCh is SSH channel using SSH agent protocol
 	agentCh ssh.Channel
+
+	agentReady chan bool
 
 	// result channel will be used by remote executions
 	// that are processed in separate process, once the result is collected
@@ -251,6 +254,7 @@ func NewServerContext(srv Server, conn *ssh.ServerConn) *ServerContext {
 		TeleportUser:     conn.Permissions.Extensions[utils.CertTeleportUser],
 		ClusterName:      conn.Permissions.Extensions[utils.CertTeleportClusterName],
 		Login:            conn.User(),
+		agentReady:       make(chan bool),
 	}
 	ctx.Entry = log.WithFields(srv.LogFields(log.Fields{
 		"local":        conn.LocalAddr(),
