@@ -174,14 +174,12 @@ func (c *ServerContext) SetAgent(a agent.Agent, ch ssh.Channel) {
 	c.agent = a
 }
 
-//func (c *ServerContext) getTerm() *terminal {
 func (c *ServerContext) GetTerm() Terminal {
 	c.RLock()
 	defer c.RUnlock()
 	return c.term
 }
 
-//func (c *ServerContext) setTerm(t *terminal) {
 func (c *ServerContext) SetTerm(t Terminal) {
 	c.Lock()
 	defer c.Unlock()
@@ -243,7 +241,6 @@ func (c *ServerContext) GetEnv(key string) (string, bool) {
 }
 
 func NewServerContext(srv Server, conn *ssh.ServerConn) *ServerContext {
-	log.Errorf("conn: %v\n", conn)
 	ctx := &ServerContext{
 		env:              make(map[string]string),
 		Conn:             conn,

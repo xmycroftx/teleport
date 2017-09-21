@@ -825,15 +825,9 @@ func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel,
 // this is the only way to make web-based terminal UI not break apart
 // when window changes its size
 func (s *Server) handleTerminalResize(sconn *ssh.ServerConn, ch ssh.Channel) {
-	// the party may not be immediately available for this connection,
-	// keep asking for a full second:
-	for i := 0; i < 10; i++ {
-		err := s.reg.PushTermSizeToParty(sconn, ch)
-		if err != nil {
-			time.Sleep(time.Millisecond * 100)
-			continue
-		}
-		return
+	err := s.reg.PushTermSizeToParty(sconn, ch)
+	if err != nil {
+		log.Warnf("Unable to push terminal size to party: %v", err)
 	}
 }
 
