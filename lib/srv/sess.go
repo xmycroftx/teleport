@@ -539,7 +539,7 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 		ctx.SetTerm(nil)
 	} else {
 		var err error
-		if s.term, err = newLocalTerminal(); err != nil {
+		if s.term, err = NewLocalTerminal(); err != nil {
 			ctx.Infof("handleShell failed to create term: %v", err)
 			return trace.Wrap(err)
 		}
@@ -592,8 +592,6 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 
 	// wait for the shell to complete:
 	go func() {
-		//err := s.term.WaitRun()
-		//result, err := collectStatus(cmd, cmd.Wait())
 		result, err := s.term.Wait()
 		if result != nil {
 			s.registry.broadcastResult(s.id, *result)

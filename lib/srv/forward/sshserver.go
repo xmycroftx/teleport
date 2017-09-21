@@ -71,6 +71,12 @@ func (f *fakeServer) EmitAuditEvent(eventType string, fields events.EventFields)
 	}
 }
 
+// PermitUserEnvironment is always false because it's up the the remote host
+// to decide if the user environment is ready or not.
+func (f *fakeServer) PermitUserEnvironment() bool {
+	return false
+}
+
 func (f *fakeServer) GetAuditLog() events.IAuditLog {
 	return f.alog
 }
@@ -340,7 +346,7 @@ func (f *fakeServer) handlePtyReq(ctx *psrv.ServerContext, channel ssh.Channel, 
 	term := ctx.GetTerm()
 	if term == nil {
 		//term, _, err = psrv.NewRemoteTerminal(req)
-		term, err = psrv.NewLocalTerminal(req)
+		term, err = psrv.NewLocalTerminal()
 		if err != nil {
 			return err
 		}

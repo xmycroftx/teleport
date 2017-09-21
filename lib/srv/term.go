@@ -47,6 +47,7 @@ type Terminal interface {
 	Kill() error
 
 	PTY() io.ReadWriter
+	TTY() *os.File
 
 	Close() error
 
@@ -69,31 +70,8 @@ type terminal struct {
 	params rsession.TerminalParams
 }
 
-// NewLocalTerminal creates and returns a correctly sized local PTY.
-func NewLocalTerminal(req *ssh.Request) (*terminal, error) {
-	r, err := parsePTYReq(req)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	log.Debugf("Parsed pty request pty(env=%v, w=%v, h=%v)", r.Env, r.W, r.H)
-
-	params, err := rsession.NewTerminalParamsFromUint32(r.W, r.H)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	t, err := newLocalTerminal()
-	if err != nil {
-		log.Warnf("Failed to create local terminal: %v", err)
-		return nil, trace.Wrap(err)
-	}
-	t.SetWinSize(*params)
-
-	return t, nil
-}
-
-// newLocalTerminal creates and returns a local PTY.
-func newLocalTerminal() (*terminal, error) {
+// NewLocalTerminal creates and returns a local PTY.
+func NewLocalTerminal() (*terminal, error) {
 	pty, tty, err := pty.Open()
 	if err != nil {
 		log.Warnf("could not start pty (%s)", err)
@@ -165,6 +143,11 @@ func (t *terminal) Kill() error {
 func (t *terminal) PTY() io.ReadWriter {
 	return t.pty
 }
+
+func (t *terminal) TTY() *os.File {
+	return t.tty
+}
+
 func (t *terminal) GetWinSize() (*term.Winsize, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -231,7 +214,7 @@ func (t *terminal) closePTY() {
 	t.pty = nil
 }
 
-func parsePTYReq(req *ssh.Request) (*sshutils.PTYReqParams, error) {
+func ParsePTYReq(req *ssh.Request) (*sshutils.PTYReqParams, error) {
 	var r sshutils.PTYReqParams
 	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
 		log.Warnf("failed to parse PTY request: %v", err)

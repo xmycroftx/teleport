@@ -855,35 +855,6 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 	ctx.AddCloser(ch)
 	defer ctx.Close()
 
-	//// As SSH conversation progresses, at some point a session will be created and
-	//// its ID will be added to the environment
-	//updateContext := func() error {
-	//	ssid, found := ctx.GetEnv(sshutils.SessionEnvVar)
-	//	if !found {
-	//		return nil
-	//	}
-	//	// make sure whatever session is requested is a valid session
-	//	_, err := rsession.ParseID(ssid)
-	//	if err != nil {
-	//		return trace.BadParameter("invalid session id")
-	//	}
-	//	findSession := func() (*session, bool) {
-	//		s.reg.Lock()
-	//		defer s.reg.Unlock()
-	//		return s.reg.findSession(rsession.ID(ssid))
-	//	}
-
-	//	// update ctx with a session ID
-	//	ctx.session, _ = findSession()
-	//	if ctx.session == nil {
-	//		log.Debugf("[SSH] will create new session for SSH connection %v", sconn.RemoteAddr())
-	//	} else {
-	//		log.Debugf("[SSH] will join session %v for SSH connection %v", ctx.session, sconn.RemoteAddr())
-	//	}
-
-	//	return nil
-	//}
-
 	for {
 		// update ctx with the session ID:
 		if !s.proxyMode {
@@ -1108,36 +1079,30 @@ func (s *Server) handleEnv(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCon
 
 // handlePTYReq allocates PTY for this SSH connection per client's request
 func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
-	var (
-		params rsession.TerminalParams
-		err    error
-		term   psrv.Terminal
-	)
-	//r, err := parsePTYReq(req)
-	//if err != nil {
-	//	return trace.Wrap(err)
-	//}
+	// parse and get the window size requested
+	r, err := psrv.ParsePTYReq(req)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	params, err := rsession.NewTerminalParamsFromUint32(r.W, r.H)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	ctx.Debugf("[SSH] terminal requested of size %v", *params)
 
-	//params, err = rsession.NewTerminalParamsFromUint32(r.W, r.H)
-	//if err != nil {
-	//	return trace.Wrap(err)
-	//}
-	//ctx.Debugf("[SSH] terminal requested of size %v", *params)
-
-	// already have terminal?
-	if term = ctx.GetTerm(); term == nil {
-		term, err = psrv.NewLocalTerminal(req)
+	// get an existing terminal or create a new one
+	term := ctx.GetTerm()
+	if term == nil {
+		term, err = psrv.NewLocalTerminal()
 		if err != nil {
 			return trace.Wrap(err)
 		}
 		ctx.SetTerm(term)
 	}
-
-	//params = term.GetTerminalParams()
-	//term.SetWinSize(params)
+	term.SetWinSize(*params)
 
 	// update the session:
-	if err := s.reg.NotifyWinChange(params, ctx); err != nil {
+	if err := s.reg.NotifyWinChange(*params, ctx); err != nil {
 		log.Error(err)
 	}
 	return nil

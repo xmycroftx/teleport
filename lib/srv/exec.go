@@ -35,7 +35,7 @@ import (
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/shell"
-	//"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/teleport/lib/utils"
 
 	"github.com/gravitational/trace"
 	"github.com/kardianos/osext"
@@ -268,24 +268,24 @@ func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
 		}
 	}
 	if ctx.session != nil {
-		//if ctx.session.term != nil {
-		//	c.Env = append(c.Env, fmt.Sprintf("SSH_TTY=%s", ctx.session.term.tty.Name()))
-		//}
+		if ctx.session.term != nil {
+			c.Env = append(c.Env, fmt.Sprintf("SSH_TTY=%s", ctx.session.term.TTY().Name()))
+		}
 		if ctx.session.id != "" {
 			c.Env = append(c.Env, fmt.Sprintf("%s=%s", teleport.SSHSessionID, ctx.session.id))
 		}
 	}
 
-	//// if the server allows reading in of ~/.tsh/environment read it in
-	//// and pass environment variables along to new session
-	//if ctx.srv.PermitUserEnvironment() {
-	//	filename := filepath.Join(osUser.HomeDir, ".tsh", "environment")
-	//	userEnvs, err := utils.ReadEnvironmentFile(filename)
-	//	if err != nil {
-	//		return nil, trace.Wrap(err)
-	//	}
-	//	c.Env = append(c.Env, userEnvs...)
-	//}
+	// if the server allows reading in of ~/.tsh/environment read it in
+	// and pass environment variables along to new session
+	if ctx.srv.PermitUserEnvironment() {
+		filename := filepath.Join(osUser.HomeDir, ".tsh", "environment")
+		userEnvs, err := utils.ReadEnvironmentFile(filename)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		c.Env = append(c.Env, userEnvs...)
+	}
 	return c, nil
 }
 

@@ -48,6 +48,7 @@ type Server interface {
 	GetNamespace() string
 
 	LogFields(fields map[string]interface{}) log.Fields
+	PermitUserEnvironment() bool
 
 	EmitAuditEvent(string, events.EventFields)
 
