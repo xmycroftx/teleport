@@ -1,10 +1,10 @@
 package forward
 
 import (
-	//"crypto/subtle"
+	"crypto/subtle"
 	"fmt"
 	//"io"
-	"io/ioutil"
+	//"io/ioutil"
 	"net"
 	//"os"
 	//"time"
@@ -14,7 +14,9 @@ import (
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/auth/native"
 	"github.com/gravitational/teleport/lib/events"
+	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
 	psrv "github.com/gravitational/teleport/lib/srv"
 	"github.com/gravitational/teleport/lib/sshutils"
@@ -32,6 +34,7 @@ type Server struct {
 
 	addr string
 
+	client        auth.ClientI
 	alog          events.IAuditLog
 	authService   auth.AccessPoint
 	reg           *psrv.SessionRegistry
@@ -41,6 +44,7 @@ type Server struct {
 func New(authClient auth.ClientI, addr string) (*Server, error) {
 	s := &Server{
 		addr:          addr,
+		client:        authClient,
 		alog:          authClient,
 		authService:   authClient,
 		sessionServer: authClient,
@@ -98,23 +102,83 @@ func (s *Server) GetSessionServer() rsession.Service {
 	return s.sessionServer
 }
 
+func generateHostCert(authService auth.ClientI, principal string) (ssh.Signer, error) {
+	keygen := native.New()
+	defer keygen.Close()
+
+	privBytes, pubBytes, err := keygen.GenerateKeyPair("")
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	clusterName, err := authService.GetDomainName()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	certBytes, err := authService.GenerateHostCert(pubBytes, principal, principal, clusterName, teleport.Roles{teleport.RoleNode}, 0)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	privateKey, err := ssh.ParsePrivateKey(privBytes)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	publicKey, _, _, _, err := ssh.ParseAuthorizedKey(certBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	cert, ok := publicKey.(*ssh.Certificate)
+	if !ok {
+		return nil, fmt.Errorf("not cert")
+	}
+
+	s, err := ssh.NewCertSigner(cert, privateKey)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return s, nil
+}
+
+func getUserCA(authService auth.ClientI) ([][]byte, error) {
+	clusterName, err := authService.GetDomainName()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	cid := services.CertAuthID{
+		DomainName: clusterName,
+		Type:       services.UserCA,
+	}
+	ca, err := authService.GetCertAuthority(cid, false)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return ca.GetCheckingKeys(), nil
+}
+
 func (s *Server) Dial(conn net.Conn) error {
-	//userChecker := &ssh.CertChecker{
-	//	IsUserAuthority: func(p ssh.PublicKey) bool {
-	//		return subtle.ConstantTimeCompare(f.userCAChecker.Marshal(), p.Marshal()) == 1
-	//	},
-	//}
+	var err error
+
+	host, _, err := net.SplitHostPort(s.AdvertiseAddr())
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	hostKey, err := generateHostCert(s.client, host)
+	if err != nil {
+		return trace.Wrap(err)
+	}
 
 	config := &ssh.ServerConfig{
-		//PublicKeyCallback: userChecker.Authenticate,
-		NoClientAuth: true,
+		PublicKeyCallback: s.keyAuth,
 	}
-	nodeSigner, err := readSigner("/Users/rjones/Development/go/src/github.com/gravitational/rusty/teleport/local/one/data/node")
-	if err != nil {
-		log.Errorf("readsigner: err: %v", err)
-		return err
-	}
-	config.AddHostKey(nodeSigner)
+	config.AddHostKey(hostKey)
 
 	log.Errorf("trying to make new server conn")
 
@@ -124,9 +188,9 @@ func (s *Server) Dial(conn net.Conn) error {
 		return err
 	}
 
-	sconn.Permissions = &ssh.Permissions{
-		Extensions: map[string]string{utils.CertTeleportUser: "rjones"},
-	}
+	//sconn.Permissions = &ssh.Permissions{
+	//	Extensions: map[string]string{utils.CertTeleportUser: "rjones"},
+	//}
 
 	log.Errorf("new server conn: %v", sconn)
 
@@ -149,6 +213,106 @@ func (s *Server) Dial(conn net.Conn) error {
 	return nil
 }
 
+// keyAuth implements SSH client authentication using public keys and is called
+// by the server every time the client connects
+func (s *Server) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+	certChecker := &ssh.CertChecker{
+		IsAuthority: func(p ssh.PublicKey) bool {
+			checkingKeys, err := getUserCA(s.client)
+			if err != nil {
+				return false
+			}
+
+			for _, keyBytes := range checkingKeys {
+				key, _, _, _, err := ssh.ParseAuthorizedKey(keyBytes)
+				if err != nil {
+					return false
+				}
+
+				caMatch := subtle.ConstantTimeCompare(key.Marshal(), p.Marshal()) == 1
+				if caMatch {
+					return true
+				}
+			}
+
+			return false
+		},
+	}
+
+	cid := fmt.Sprintf("conn(%v->%v, user=%v)", conn.RemoteAddr(), conn.LocalAddr(), conn.User())
+	fingerprint := fmt.Sprintf("%v %v", key.Type(), sshutils.Fingerprint(key))
+	log.Debugf("[SSH] %v auth attempt with key %v", cid, fingerprint)
+
+	logger := log.WithFields(log.Fields{
+		"local":       conn.LocalAddr(),
+		"remote":      conn.RemoteAddr(),
+		"user":        conn.User(),
+		"fingerprint": fingerprint,
+	})
+
+	cert, ok := key.(*ssh.Certificate)
+	log.Debugf("[SSH] %v auth attempt with key %v, %#v", cid, fingerprint, cert)
+	if !ok {
+		log.Debugf("[SSH] auth attempt, unsupported key type for %v", fingerprint)
+		return nil, trace.BadParameter("unsupported key type: %v", fingerprint)
+	}
+	if len(cert.ValidPrincipals) == 0 {
+		log.Debugf("[SSH] need a valid principal for key %v", fingerprint)
+		return nil, trace.BadParameter("need a valid principal for key %v", fingerprint)
+	}
+	if len(cert.KeyId) == 0 {
+		log.Debugf("[SSH] need a valid key ID for key %v", fingerprint)
+		return nil, trace.BadParameter("need a valid key for key %v", fingerprint)
+	}
+	teleportUser := cert.KeyId
+
+	logAuditEvent := func(err error) {
+		// only failed attempts are logged right now
+		if err != nil {
+			fields := events.EventFields{
+				events.EventUser:          teleportUser,
+				events.AuthAttemptSuccess: false,
+				events.AuthAttemptErr:     err.Error(),
+			}
+			log.Warningf("[SSH] failed login attempt %#v", fields)
+			s.EmitAuditEvent(events.AuthAttemptEvent, fields)
+		}
+	}
+	permissions, err := certChecker.Authenticate(conn, key)
+	if err != nil {
+		logAuditEvent(err)
+		return nil, trace.Wrap(err)
+	}
+	if err := certChecker.CheckCert(conn.User(), cert); err != nil {
+		logAuditEvent(err)
+		return nil, trace.Wrap(err)
+	}
+
+	//permissions, err := s.certChecker.Authenticate(conn, key)
+	//if err != nil {
+	//	logAuditEvent(err)
+	//	return nil, trace.Wrap(err)
+	//}
+	//if err := s.certChecker.CheckCert(conn.User(), cert); err != nil {
+	//	logAuditEvent(err)
+	//	return nil, trace.Wrap(err)
+	//}
+	logger.Debugf("[SSH] successfully authenticated")
+
+	// this is the only way I know of to pass valid principal with the
+	// connection
+	permissions.Extensions[utils.CertTeleportUser] = teleportUser
+
+	clusterName, err := s.checkPermissionToLogin(cert, teleportUser, conn.User())
+	if err != nil {
+		logger.Errorf("Permission denied: %v", err)
+		logAuditEvent(err)
+		return nil, trace.Wrap(err)
+	}
+	permissions.Extensions[utils.CertTeleportClusterName] = clusterName
+	return permissions, nil
+}
+
 func (s *Server) handleGlobalRequest(r *ssh.Request) {
 	switch r.Type {
 	case teleport.KeepAliveReqType:
@@ -160,18 +324,6 @@ func (s *Server) handleGlobalRequest(r *ssh.Request) {
 
 func (s *Server) handleChannel(nc net.Conn, sconn *ssh.ServerConn, nch ssh.NewChannel) {
 	channelType := nch.ChannelType()
-	//if s.proxyMode {
-	//	if channelType == "session" { // interactive sessions
-	//		ch, requests, err := nch.Accept()
-	//		if err != nil {
-	//			log.Infof("could not accept channel (%s)", err)
-	//		}
-	//		go s.handleSessionRequests(sconn, ch, requests)
-	//	} else {
-	//		nch.Reject(ssh.UnknownChannelType, fmt.Sprintf("unknown channel type: %v", channelType))
-	//	}
-	//	return
-	//}
 
 	switch channelType {
 	// a client requested the terminal size to be sent along with every
@@ -315,22 +467,6 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 // dispatch receives an SSH request for a subsystem and disptaches the request to the
 // appropriate subsystem implementation
 func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
-	//ctx.Debugf("[SSH] ssh.dispatch(req=%v, wantReply=%v)", req.Type, req.WantReply)
-	//// if this SSH server is configured to only proxy, we do not support anything other
-	//// than our own custom "subsystems" and environment manipulation
-	//if s.proxyMode {
-	//	switch req.Type {
-	//	case "subsystem":
-	//		return s.handleSubsystem(ch, req, ctx)
-	//	case "env":
-	//		// we currently ignore setting any environment variables via SSH for security purposes
-	//		return s.handleEnv(ch, req, ctx)
-	//	default:
-	//		return trace.BadParameter(
-	//			"proxy doesn't support request type '%v'", req.Type)
-	//	}
-	//}
-
 	switch req.Type {
 	//case "exec":
 	//	// exec is a remote execution of a program, does not use PTY
@@ -369,6 +505,18 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 }
 
 func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
+	//// check if the role allows agent forwarding
+	//roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
+	//if err != nil {
+	//	log.Errorf("here0!")
+	//	return trace.Wrap(err)
+	//}
+	//if err := roles.CheckAgentForward(ctx.Login); err != nil {
+	//	log.Errorf("here1!")
+	//	log.Warningf("[SSH:node] denied forward agent %v", err)
+	//	return trace.Wrap(err)
+	//}
+
 	authChannel, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
 	if err != nil {
 		return err
@@ -376,27 +524,6 @@ func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.
 	ctx.SetAgent(agent.NewClient(authChannel), authChannel)
 
 	close(ctx.AgentReady)
-
-	//roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
-	//if err != nil {
-	//	return trace.Wrap(err)
-	//}
-	//if err := roles.CheckAgentForward(ctx.Login); err != nil {
-	//	log.Warningf("[SSH:node] denied forward agent %v", err)
-	//	return trace.Wrap(err)
-	//}
-	//systemUser, err := user.Lookup(ctx.Login)
-	//if err != nil {
-	//	return trace.ConvertSystemError(err)
-	//}
-	//uid, err := strconv.Atoi(systemUser.Uid)
-	//if err != nil {
-	//	return trace.Wrap(err)
-	//}
-	//gid, err := strconv.Atoi(systemUser.Gid)
-	//if err != nil {
-	//	return trace.Wrap(err)
-	//}
 
 	//authChan, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
 	//if err != nil {
@@ -509,7 +636,7 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.Server
 	// get an existing terminal or create a new one
 	term := ctx.GetTerm()
 	if term == nil {
-		term, err = psrv.NewLocalTerminal(ctx)
+		term, err = psrv.NewRemoteTerminal(ctx)
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -595,57 +722,57 @@ func replyError(ch ssh.Channel, req *ssh.Request, err error) {
 	}
 }
 
-func readSigner(path string) (ssh.Signer, error) {
-	privateKey, err := readPrivateKey(path + ".key")
-	if err != nil {
-		return nil, err
-	}
-
-	cert, err := readCertificate(path + ".cert")
-	if err != nil {
-		return nil, err
-	}
-
-	s, err := ssh.NewCertSigner(cert, privateKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return s, nil
-}
-
-func readPrivateKey(path string) (ssh.Signer, error) {
-	privateBytes, err := ioutil.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	private, err := ssh.ParsePrivateKey(privateBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	return private, nil
-}
-
-func readCertificate(path string) (*ssh.Certificate, error) {
-	publicBytes, err := ioutil.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	key, _, _, _, err := ssh.ParseAuthorizedKey(publicBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	sshCert, ok := key.(*ssh.Certificate)
-	if !ok {
-		return nil, fmt.Errorf("not cert")
-	}
-
-	return sshCert, nil
-}
+//func readSigner(path string) (ssh.Signer, error) {
+//	privateKey, err := readPrivateKey(path + ".key")
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	cert, err := readCertificate(path + ".cert")
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	s, err := ssh.NewCertSigner(cert, privateKey)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	return s, nil
+//}
+//
+//func readPrivateKey(path string) (ssh.Signer, error) {
+//	privateBytes, err := ioutil.ReadFile(path)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	private, err := ssh.ParsePrivateKey(privateBytes)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	return private, nil
+//}
+//
+//func readCertificate(path string) (*ssh.Certificate, error) {
+//	publicBytes, err := ioutil.ReadFile(path)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	key, _, _, _, err := ssh.ParseAuthorizedKey(publicBytes)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	sshCert, ok := key.(*ssh.Certificate)
+//	if !ok {
+//		return nil, fmt.Errorf("not cert")
+//	}
+//
+//	return sshCert, nil
+//}
 
 func parseWinChange(req *ssh.Request) (*rsession.TerminalParams, error) {
 	var r sshutils.WinChangeReqParams
@@ -657,4 +784,131 @@ func parseWinChange(req *ssh.Request) (*rsession.TerminalParams, error) {
 		return nil, trace.Wrap(err)
 	}
 	return params, nil
+}
+
+// checkPermissionToLogin checks the given certificate (supplied by a connected client)
+// to see if this certificate can be allowed to login as user:login pair
+func (s *Server) checkPermissionToLogin(cert *ssh.Certificate, teleportUser, osUser string) (string, error) {
+	// enumerate all known CAs and see if any of them signed the
+	// supplied certificate
+	log.Debugf("[HA SSH NODE] checkPermsissionToLogin(%v, %v)", teleportUser, osUser)
+	cas, err := s.authService.GetCertAuthorities(services.UserCA, false)
+	if err != nil {
+		return "", trace.Wrap(err)
+	}
+	var ca services.CertAuthority
+	for i := range cas {
+		checkers, err := cas[i].Checkers()
+		if err != nil {
+			return "", trace.Wrap(err)
+		}
+		for _, checker := range checkers {
+			if sshutils.KeysEqual(cert.SignatureKey, checker) {
+				ca = cas[i]
+				break
+			}
+		}
+	}
+	// the certificate was signed by unknown authority
+	if ca == nil {
+		return "", trace.AccessDenied(
+			"the certificate for user '%v' is signed by untrusted CA",
+			teleportUser)
+	}
+
+	domainName, err := s.authService.GetDomainName()
+	if err != nil {
+		return "", trace.Wrap(err)
+	}
+
+	// for local users, go and check their individual permissions
+	//var roles services.RoleSet
+	//if domainName == ca.GetClusterName() {
+	//	users, err := s.authService.GetUsers()
+	//	if err != nil {
+	//		return "", trace.Wrap(err)
+	//	}
+	//	for _, u := range users {
+	//		if u.GetName() == teleportUser {
+	//			// pass along the traits so we get the substituted roles for this user
+	//			roles, err = services.FetchRoles(u.GetRoles(), s.authService, u.GetTraits())
+	//			if err != nil {
+	//				return "", trace.Wrap(err)
+	//			}
+	//		}
+	//	}
+	//} else {
+	//	certRoles, err := s.extractRolesFromCert(cert)
+	//	if err != nil {
+	//		log.Errorf("failed to extract roles from cert: %v", err)
+	//		return "", trace.AccessDenied("failed to parse certificate roles")
+	//	}
+	//	roleNames, err := ca.CombinedMapping().Map(certRoles)
+	//	if err != nil {
+	//		log.Errorf("failed to map roles %v", err)
+	//		return "", trace.AccessDenied("failed to map roles")
+	//	}
+	//	// pass the principals on the certificate along as the login traits
+	//	// to the remote cluster.
+	//	traits := map[string][]string{
+	//		teleport.TraitLogins: cert.ValidPrincipals,
+	//	}
+	//	roles, err = services.FetchRoles(roleNames, s.authService, traits)
+	//	if err != nil {
+	//		return "", trace.Wrap(err)
+	//	}
+	//}
+
+	//if err := roles.CheckAccessToServer(osUser, s.getInfo()); err != nil {
+	//	return "", trace.AccessDenied("user %s@%s is not authorized to login as %v@%s: %v",
+	//		teleportUser, ca.GetClusterName(), osUser, domainName, err)
+	//}
+
+	return domainName, nil
+}
+
+// fetchRoleSet fretches role set for a given user
+func (s *Server) fetchRoleSet(teleportUser string, clusterName string) (services.RoleSet, error) {
+	localClusterName, err := s.client.GetDomainName()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	cas, err := s.client.GetCertAuthorities(services.UserCA, false)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	var ca services.CertAuthority
+	for i := range cas {
+		if cas[i].GetClusterName() == clusterName {
+			ca = cas[i]
+			break
+		}
+	}
+	if ca == nil {
+		return nil, trace.NotFound("could not find certificate authority for cluster %v and user %v", clusterName, teleportUser)
+	}
+
+	var roles services.RoleSet
+	if localClusterName == clusterName {
+		users, err := s.client.GetUsers()
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		for _, u := range users {
+			if u.GetName() == teleportUser {
+				roles, err = services.FetchRoles(u.GetRoles(), s.client, u.GetTraits())
+				if err != nil {
+					return nil, trace.Wrap(err)
+				}
+			}
+		}
+	} else {
+		roles, err = services.FetchRoles(ca.GetRoles(), s.client, nil)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+	}
+	return roles, err
 }

@@ -199,6 +199,7 @@ func GetCheckerForBuiltinRole(role teleport.Role) (services.AccessChecker, error
 						services.NewRule(services.KindAuthServer, services.RO()),
 						services.NewRule(services.KindReverseTunnel, services.RO()),
 						services.NewRule(services.KindCertAuthority, services.ReadNoSecrets()),
+						services.NewRule(services.KindHostCert, services.RW()),
 						services.NewRule(services.KindUser, services.RO()),
 						services.NewRule(services.KindRole, services.RO()),
 						services.NewRule(services.KindClusterAuthPreference, services.RO()),

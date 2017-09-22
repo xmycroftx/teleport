@@ -17,9 +17,10 @@ limitations under the License.
 package srv
 
 import (
+	"crypto/subtle"
+	//"fmt"
 	"io"
-	//"net"
-	//"crypto/subtle"
+	"net"
 	"os"
 	"os/exec"
 	"sync"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
@@ -270,9 +272,27 @@ func getHostCA(authService auth.AccessPoint, clusterName string) (services.CertA
 }
 
 func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
+	hostKeyChecker := func(hostport string, remote net.Addr, key ssh.PublicKey) error {
+		ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		checkers, err := ca.Checkers()
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		for _, checker := range checkers {
+			caMatch := subtle.ConstantTimeCompare(checker.Marshal(), key.Marshal()) == 1
+			if caMatch {
+				return trace.Wrap(err)
+			}
+		}
+		return nil
+	}
+
 	//checker := &ssh.CertChecker{
-	//	// TODO(russjones): Revendor golang.org/x/crypto/ssh.
-	//	//IsHostAuthority: func(p ssh.PublicKey, addr string) bool {
 	//	IsAuthority: func(p ssh.PublicKey) bool {
 	//		ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
 	//		if err != nil {
@@ -287,7 +307,7 @@ func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 	//		for _, checker := range checkers {
 	//			caMatch := subtle.ConstantTimeCompare(checker.Marshal(), p.Marshal()) == 1
 	//			if caMatch {
-	//				return true
+	//				return false
 	//			}
 	//		}
 	//		return false
@@ -303,10 +323,10 @@ func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 		Auth: []ssh.AuthMethod{
 			authMethod,
 		},
-		//HostKeyCallback: checker.CheckHostKey,
+		HostKeyCallback: hostKeyChecker,
+		Timeout:         defaults.DefaultDialTimeout,
 	}
 
-	// TODO(russjones): Add a timeout here.
 	client, err := ssh.Dial("tcp", ctx.srv.AdvertiseAddr(), clientConfig)
 	if err != nil {
 		return nil, err
@@ -365,12 +385,7 @@ func (t *remoteTerminal) Run() error {
 	//ssh.TTY_OP_OSPEED: 14400,
 	}
 
-	term, ok := t.ctx.GetEnv("TERM")
-	if !ok {
-		term = "xterm"
-	}
-
-	if err := t.session.RequestPty(term, t.params.W, t.params.H, modes); err != nil {
+	if err := t.session.RequestPty("xterm", t.params.W, t.params.H, modes); err != nil {
 		return trace.Wrap(err)
 	}
 
