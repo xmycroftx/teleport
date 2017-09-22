@@ -52,7 +52,7 @@ type Agent struct {
 	clientName      string
 	broadcastClose  *utils.CloseBroadcaster
 	disconnectC     chan bool
-	hostKeyCallback utils.HostKeyCallback
+	hostKeyCallback ssh.HostKeyCallback
 	authMethods     []ssh.AuthMethod
 	accessPoint     auth.AccessPoint
 }

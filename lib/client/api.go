@@ -85,9 +85,9 @@ func (p *ForwardedPort) ToString() string {
 	return net.JoinHostPort(p.SrcIP, sport) + ":" + net.JoinHostPort(p.DestHost, dport)
 }
 
-// HostKeyCallback is called by SSH client when it needs to check
-// remote host key or certificate validity
-type HostKeyCallback func(host string, ip net.Addr, key ssh.PublicKey) error
+//// HostKeyCallback is called by SSH client when it needs to check
+//// remote host key or certificate validity
+//type HostKeyCallback func(host string, ip net.Addr, key ssh.PublicKey) error
 
 // Config is a client config
 type Config struct {
@@ -152,7 +152,7 @@ type Config struct {
 	// HostKeyCallback will be called to check host keys of the remote
 	// node, if not specified will be using CheckHostSignature function
 	// that uses local cache to validate hosts
-	HostKeyCallback HostKeyCallback
+	HostKeyCallback ssh.HostKeyCallback
 
 	// KeyDir defines where temporary session keys will be stored.
 	// if empty, they'll go to ~/.tsh

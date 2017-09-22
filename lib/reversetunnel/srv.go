@@ -125,8 +125,8 @@ func NewServer(addr utils.NetAddr, hostSigners []ssh.Signer,
 	if err != nil {
 		return nil, err
 	}
-	srv.hostCertChecker = ssh.CertChecker{IsAuthority: srv.isHostAuthority}
-	srv.userCertChecker = ssh.CertChecker{IsAuthority: srv.isUserAuthority}
+	srv.hostCertChecker = ssh.CertChecker{IsHostAuthority: srv.isHostAuthority}
+	srv.userCertChecker = ssh.CertChecker{IsUserAuthority: srv.isUserAuthority}
 	srv.srv = s
 	return srv, nil
 }
@@ -186,7 +186,8 @@ func (s *server) HandleNewChan(conn net.Conn, sconn *ssh.ServerConn, nch ssh.New
 
 // isHostAuthority is called during checking the client key, to see if the signing
 // key is the real host CA authority key.
-func (s *server) isHostAuthority(auth ssh.PublicKey) bool {
+// TODO(russjones): Support address.
+func (s *server) isHostAuthority(auth ssh.PublicKey, address string) bool {
 	keys, err := s.getTrustedCAKeys(services.HostCA)
 	if err != nil {
 		log.Errorf("failed to retrieve trusted keys, err: %v", err)

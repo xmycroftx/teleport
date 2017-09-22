@@ -281,7 +281,7 @@ func New(addr utils.NetAddr,
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	s.certChecker = ssh.CertChecker{IsAuthority: s.isAuthority}
+	s.certChecker = ssh.CertChecker{IsUserAuthority: s.isAuthority}
 
 	for _, o := range options {
 		if err := o(s); err != nil {

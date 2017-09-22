@@ -273,8 +273,7 @@ func getHostCA(authService auth.AccessPoint, clusterName string) (services.CertA
 func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 	checker := &ssh.CertChecker{
 		// TODO(russjones): Revendor golang.org/x/crypto/ssh.
-		//IsHostAuthority: func(p ssh.PublicKey, addr string) bool {
-		IsAuthority: func(p ssh.PublicKey) bool {
+		IsHostAuthority: func(p ssh.PublicKey, addr string) bool {
 			ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
 			if err != nil {
 				return false
@@ -286,8 +285,9 @@ func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 			}
 
 			for _, checker := range checkers {
+				addrMatch := subtle.ConstantTimeCompare([]byte(ctx.srv.AdvertiseAddr()), []byte(addr)) == 1
 				caMatch := subtle.ConstantTimeCompare(checker.Marshal(), p.Marshal()) == 1
-				if caMatch {
+				if addrMatch && caMatch {
 					return true
 				}
 			}

@@ -86,10 +86,10 @@
   version = "v1.1.0"
 
 [[projects]]
+  branch = "master"
   name = "github.com/docker/docker"
   packages = ["pkg/term/windows"]
-  revision = "092cba3727bb9b4a2f0e922cd6c0f93ea270e363"
-  version = "v1.13.1"
+  revision = "777d4a1bf45c85db6931205d4adbe38a17c583d7"
 
 [[projects]]
   name = "github.com/ghodss/yaml"
@@ -341,9 +341,10 @@
   revision = "3988ac14d6f66842abf574a0615d2935ef5dab9d"
 
 [[projects]]
+  branch = "master"
   name = "golang.org/x/crypto"
   packages = ["bcrypt","blowfish","curve25519","ed25519","ed25519/internal/edwards25519","nacl/secretbox","poly1305","salsa20/salsa","ssh","ssh/agent","ssh/terminal"]
-  revision = "453249f01cfeb54c3d549ddb75ff152ca243f9d8"
+  revision = "7d9177d70076375b9a59c8fde23d52d9c4a7ecd5"
 
 [[projects]]
   name = "golang.org/x/net"
@@ -352,7 +353,7 @@
 
 [[projects]]
   name = "golang.org/x/sys"
-  packages = ["unix"]
+  packages = ["unix","windows"]
   revision = "e24f485414aeafb646f6fca458b0bf869c0880a1"
 
 [[projects]]
@@ -390,6 +391,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "206dacde9d25202422550789814d38dc5a453f29beaeb6e00d059a8f4101515a"
+  inputs-digest = "40e0f0522b0dc2dee15228ca571b6be5cf5726f24473d0be6f9daed95e231322"
   solver-name = "gps-cdcl"
   solver-version = 1

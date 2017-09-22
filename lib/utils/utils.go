@@ -30,10 +30,10 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/trace"
 	"github.com/pborman/uuid"
-	"golang.org/x/crypto/ssh"
+	//"golang.org/x/crypto/ssh"
 )
 
-type HostKeyCallback func(hostID string, remote net.Addr, key ssh.PublicKey) error
+//type HostKeyCallback func(hostID string, remote net.Addr, key ssh.PublicKey) error
 
 func ReadPath(path string) ([]byte, error) {
 	s, err := filepath.Abs(path)

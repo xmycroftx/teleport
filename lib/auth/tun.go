@@ -144,8 +144,8 @@ func NewTunnel(addr utils.NetAddr,
 	if err != nil {
 		return nil, err
 	}
-	tunnel.userCertChecker = ssh.CertChecker{IsAuthority: tunnel.isUserAuthority}
-	tunnel.hostCertChecker = ssh.CertChecker{IsAuthority: tunnel.isHostAuthority}
+	tunnel.userCertChecker = ssh.CertChecker{IsUserAuthority: tunnel.isUserAuthority}
+	tunnel.hostCertChecker = ssh.CertChecker{IsHostAuthority: tunnel.isHostAuthority}
 	return tunnel, nil
 }
 
@@ -219,7 +219,8 @@ func (s *AuthTunnel) HandleNewChan(_ net.Conn, sconn *ssh.ServerConn, nch ssh.Ne
 	}
 }
 
-func (s *AuthTunnel) isHostAuthority(auth ssh.PublicKey) bool {
+// TODO(russjones): Check address as well.
+func (s *AuthTunnel) isHostAuthority(auth ssh.PublicKey, address string) bool {
 	domainName, err := s.authServer.GetDomainName()
 	if err != nil {
 		return false
@@ -1020,6 +1021,9 @@ func (c *TunClient) dialAuthServer(authServer utils.NetAddr) (sshClient *ssh.Cli
 		User:    c.user,
 		Auth:    c.authMethods,
 		Timeout: defaults.DefaultDialTimeout,
+		// TODO(russjones): How do we check the host key without getting the host
+		// key from the Auth Server?
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 	const dialRetryTimes = 1
 	for attempt := 0; attempt < dialRetryTimes; attempt++ {
