@@ -19,7 +19,7 @@ package srv
 import (
 	"io"
 	//"net"
-	"crypto/subtle"
+	//"crypto/subtle"
 	"os"
 	"os/exec"
 	"sync"
@@ -28,6 +28,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	//"golang.org/x/crypto/ssh/agent"
 
+	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
@@ -71,8 +72,7 @@ type terminal struct {
 
 	pty *os.File
 	tty *os.File
-	//err    error
-	//done   bool
+
 	params rsession.TerminalParams
 }
 
@@ -248,10 +248,9 @@ type remoteTerminal struct {
 
 	ctx *ServerContext
 
-	session     *ssh.Session
-	params      rsession.TerminalParams
-	sessionDone chan bool
-	ptyBuffer   *ptyBuffer
+	session   *ssh.Session
+	params    rsession.TerminalParams
+	ptyBuffer *ptyBuffer
 }
 
 // TODO(russjones): Use GetCertAuthority instead.
@@ -271,34 +270,32 @@ func getHostCA(authService auth.AccessPoint, clusterName string) (services.CertA
 }
 
 func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
-	checker := &ssh.CertChecker{
-		// TODO(russjones): Revendor golang.org/x/crypto/ssh.
-		//IsHostAuthority: func(p ssh.PublicKey, addr string) bool {
-		IsAuthority: func(p ssh.PublicKey) bool {
-			ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
-			if err != nil {
-				return false
-			}
+	//checker := &ssh.CertChecker{
+	//	// TODO(russjones): Revendor golang.org/x/crypto/ssh.
+	//	//IsHostAuthority: func(p ssh.PublicKey, addr string) bool {
+	//	IsAuthority: func(p ssh.PublicKey) bool {
+	//		ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
+	//		if err != nil {
+	//			return false
+	//		}
 
-			checkers, err := ca.Checkers()
-			if err != nil {
-				return false
-			}
+	//		checkers, err := ca.Checkers()
+	//		if err != nil {
+	//			return false
+	//		}
 
-			for _, checker := range checkers {
-				caMatch := subtle.ConstantTimeCompare(checker.Marshal(), p.Marshal()) == 1
-				if caMatch {
-					return true
-				}
-			}
-			return false
-		},
-	}
+	//		for _, checker := range checkers {
+	//			caMatch := subtle.ConstantTimeCompare(checker.Marshal(), p.Marshal()) == 1
+	//			if caMatch {
+	//				return true
+	//			}
+	//		}
+	//		return false
+	//	},
+	//}
 
-	log.Errorf("waiting for agent to be ready")
 	// TODO(russjones): Wait for the agent to be ready or a timeout.
 	<-ctx.AgentReady
-	log.Errorf("agent ready!")
 	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
 
 	clientConfig := &ssh.ClientConfig{
@@ -306,7 +303,7 @@ func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 		Auth: []ssh.AuthMethod{
 			authMethod,
 		},
-		HostKeyCallback: checker.CheckHostKey,
+		//HostKeyCallback: checker.CheckHostKey,
 	}
 
 	// TODO(russjones): Add a timeout here.
@@ -321,9 +318,8 @@ func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 	}
 
 	t := &remoteTerminal{
-		session:     session,
-		sessionDone: make(chan bool),
-		ptyBuffer:   &ptyBuffer{},
+		session:   session,
+		ptyBuffer: &ptyBuffer{},
 	}
 
 	return t, nil
@@ -364,12 +360,17 @@ func (t *remoteTerminal) Run() error {
 	}
 
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,
-		ssh.TTY_OP_ISPEED: 14400,
-		ssh.TTY_OP_OSPEED: 14400,
+	//ssh.ECHO:          1,
+	//ssh.TTY_OP_ISPEED: 14400,
+	//ssh.TTY_OP_OSPEED: 14400,
 	}
 
-	if err := t.session.RequestPty("xterm", t.params.W, t.params.H, modes); err != nil {
+	term, ok := t.ctx.GetEnv("TERM")
+	if !ok {
+		term = "xterm"
+	}
+
+	if err := t.session.RequestPty(term, t.params.W, t.params.H, modes); err != nil {
 		return trace.Wrap(err)
 	}
 
@@ -381,14 +382,33 @@ func (t *remoteTerminal) Run() error {
 }
 
 func (t *remoteTerminal) Wait() (*ExecResult, error) {
-	t.wg.Wait()
+	err := t.session.Wait()
+	if err != nil {
+		if exitErr, ok := err.(*ssh.ExitError); ok {
+			return &ExecResult{
+				Code:    exitErr.ExitStatus(),
+				Command: "forward-shell",
+			}, err
+		}
+
+		return &ExecResult{
+			Code:    teleport.RemoteCommandFailure,
+			Command: "forward-shell",
+		}, err
+	}
+
 	return &ExecResult{
-		Code:    0,
-		Command: "",
+		Code:    teleport.RemoteCommandSuccess,
+		Command: "forward-shell",
 	}, nil
 }
 
 func (t *remoteTerminal) Kill() error {
+	err := t.session.Signal(ssh.SIGKILL)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
 	return nil
 }
 
@@ -413,19 +433,45 @@ func (t *remoteTerminal) Close() error {
 }
 
 func (t *remoteTerminal) GetWinSize() (*term.Winsize, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	return t.params.Winsize(), nil
 }
 
 func (t *remoteTerminal) SetWinSize(params rsession.TerminalParams) error {
-	// TODO(russjones): Revendor golang.org/x/crypto/ssh.
-	//err = session.WindowChange(params.H, params.W)
-	//if err != nil {
-	//    return err
-	//}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	err := t.windowChange(params.W, params.H)
+	if err != nil {
+		return trace.Wrap(err)
+	}
 	t.params = params
+
 	return nil
 }
 
 func (t *remoteTerminal) GetTerminalParams() rsession.TerminalParams {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	return t.params
+}
+
+func (t *remoteTerminal) windowChange(w int, h int) error {
+	type windowChangeRequest struct {
+		W   uint32
+		H   uint32
+		Wpx uint32
+		Hpx uint32
+	}
+	req := windowChangeRequest{
+		W:   uint32(w),
+		H:   uint32(h),
+		Wpx: uint32(w * 8),
+		Hpx: uint32(h * 8),
+	}
+	_, err := t.session.SendRequest("window-change", false, ssh.Marshal(&req))
+	return err
 }

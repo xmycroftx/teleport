@@ -104,7 +104,6 @@ func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
 	log.Errorf("fakeServer: %v", fakeServer)
 
 	server, client := net.Pipe()
-
 	log.Errorf("trying to dial")
 	go fakeServer.Dial(server)
 
