@@ -1,7 +1,7 @@
 package forward
 
 import (
-	"crypto/subtle"
+	//"crypto/subtle"
 	"fmt"
 	"io"
 	//"io/ioutil"
@@ -212,24 +212,44 @@ func (s *Server) Dial(conn net.Conn) error {
 func (s *Server) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 	certChecker := &ssh.CertChecker{
 		IsAuthority: func(p ssh.PublicKey) bool {
-			checkingKeys, err := getUserCA(s.client)
+			// find cert authority by it's key
+			cas, err := s.authService.GetCertAuthorities(services.UserCA, false)
 			if err != nil {
+				log.Warningf("%v", trace.DebugReport(err))
 				return false
 			}
 
-			for _, keyBytes := range checkingKeys {
-				key, _, _, _, err := ssh.ParseAuthorizedKey(keyBytes)
+			for i := range cas {
+				checkers, err := cas[i].Checkers()
 				if err != nil {
+					log.Warningf("%v", err)
 					return false
 				}
-
-				caMatch := subtle.ConstantTimeCompare(key.Marshal(), p.Marshal()) == 1
-				if caMatch {
-					return true
+				for _, checker := range checkers {
+					if sshutils.KeysEqual(p, checker) {
+						return true
+					}
 				}
 			}
-
 			return false
+			//checkingKeys, err := getUserCA(s.client)
+			//if err != nil {
+			//	return false
+			//}
+
+			//for _, keyBytes := range checkingKeys {
+			//	key, _, _, _, err := ssh.ParseAuthorizedKey(keyBytes)
+			//	if err != nil {
+			//		return false
+			//	}
+
+			//	caMatch := subtle.ConstantTimeCompare(key.Marshal(), p.Marshal()) == 1
+			//	if caMatch {
+			//		return true
+			//	}
+			//}
+
+			//return false
 		},
 	}
 
@@ -500,6 +520,7 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 
 func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
 	// check if the role allows agent forwarding
+	log.Errorf("handleAgentForward: ctx.ClusterName: %v", ctx.ClusterName)
 	roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
 	if err != nil {
 		return trace.Wrap(err)
@@ -881,6 +902,7 @@ func (s *Server) fetchRoleSet(teleportUser string, clusterName string) (services
 
 	var roles services.RoleSet
 	if localClusterName == clusterName {
+		log.Errorf("local cluster name match")
 		users, err := s.client.GetUsers()
 		if err != nil {
 			return nil, trace.Wrap(err)
@@ -894,10 +916,13 @@ func (s *Server) fetchRoleSet(teleportUser string, clusterName string) (services
 			}
 		}
 	} else {
+		log.Errorf("remote lcuster")
 		roles, err = services.FetchRoles(ca.GetRoles(), s.client, nil)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 	}
+
+	log.Errorf("fetchRoleSet: returning roles: %v", roles)
 	return roles, err
 }
