@@ -272,7 +272,7 @@ func getHostCA(authService auth.AccessPoint, clusterName string) (services.CertA
 }
 
 func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
-	session, err := remoteSession(ctx)
+	session, err := RemoteSession(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

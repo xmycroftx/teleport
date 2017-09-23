@@ -485,10 +485,10 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 		return nil
 	case "env":
 		return s.handleEnv(ch, req, ctx)
-	//case "subsystem":
-	//	// subsystems are SSH subsystems defined in http://tools.ietf.org/html/rfc4254 6.6
-	//	// they are in essence SSH session extensions, allowing to implement new SSH commands
-	//	return s.handleSubsystem(ch, req, ctx)
+	case "subsystem":
+		// subsystems are SSH subsystems defined in http://tools.ietf.org/html/rfc4254 6.6
+		// they are in essence SSH session extensions, allowing to implement new SSH commands
+		return s.handleSubsystem(ch, req, ctx)
 	case sshutils.WindowChangeReq:
 		return s.handleWinChange(ch, req, ctx)
 	case sshutils.AgentReq:
@@ -506,17 +506,15 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 }
 
 func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
-	//// check if the role allows agent forwarding
-	//roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
-	//if err != nil {
-	//	log.Errorf("here0!")
-	//	return trace.Wrap(err)
-	//}
-	//if err := roles.CheckAgentForward(ctx.Login); err != nil {
-	//	log.Errorf("here1!")
-	//	log.Warningf("[SSH:node] denied forward agent %v", err)
-	//	return trace.Wrap(err)
-	//}
+	// check if the role allows agent forwarding
+	roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	if err := roles.CheckAgentForward(ctx.Login); err != nil {
+		log.Warningf("[SSH:node] denied forward agent %v", err)
+		return trace.Wrap(err)
+	}
 
 	authChannel, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
 	if err != nil {
@@ -525,42 +523,6 @@ func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.
 	ctx.SetAgent(agent.NewClient(authChannel), authChannel)
 
 	close(ctx.AgentReady)
-
-	//authChan, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
-	//if err != nil {
-	//	return trace.Wrap(err)
-	//}
-	//clientAgent := agent.NewClient(authChan)
-	//ctx.SetAgent(clientAgent, authChan)
-
-	//pid := os.Getpid()
-	//socketDir, err := ioutil.TempDir(os.TempDir(), "teleport-")
-	//if err != nil {
-	//	return trace.Wrap(err)
-	//}
-	//dirCloser := &utils.RemoveDirCloser{Path: socketDir}
-	//socketPath := filepath.Join(socketDir, fmt.Sprintf("teleport-%v.socket", pid))
-	//if err := os.Chown(socketDir, uid, gid); err != nil {
-	//	if err := dirCloser.Close(); err != nil {
-	//		log.Warn("failed to remove directory: %v", err)
-	//	}
-	//	return trace.ConvertSystemError(err)
-	//}
-
-	//agentServer := &teleagent.AgentServer{Agent: clientAgent}
-	//err = agentServer.ListenUnixSocket(socketPath, uid, gid, 0600)
-	//if err != nil {
-	//	return trace.Wrap(err)
-	//}
-	//if req.WantReply {
-	//	req.Reply(true, nil)
-	//}
-	//ctx.SetEnv(teleport.SSHAuthSock, socketPath)
-	//ctx.SetEnv(teleport.SSHAgentPID, fmt.Sprintf("%v", pid))
-	//ctx.AddCloser(agentServer)
-	//ctx.AddCloser(dirCloser)
-	//ctx.Debugf("[SSH:node] opened agent channel for teleport user %v and socket %v", ctx.TeleportUser, socketPath)
-	//go agentServer.Serve()
 
 	return nil
 }
@@ -587,27 +549,58 @@ func (s *Server) handleWinChange(ch ssh.Channel, req *ssh.Request, ctx *psrv.Ser
 	return nil
 }
 
-//func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
-//	sb, err := parseSubsystemRequest(s, req)
-//	if err != nil {
-//		ctx.Warnf("[SSH] %v failed to parse subsystem request: %v", err)
-//		return trace.Wrap(err)
-//	}
-//	ctx.Debugf("[SSH] subsystem request: %v", sb)
-//	// starting subsystem is blocking to the client,
-//	// while collecting its result and waiting is not blocking
-//	if err := sb.start(ctx.Conn, ch, req, ctx); err != nil {
-//		ctx.Warnf("[SSH] failed executing request: %v", err)
-//		ctx.SendSubsystemResult(trace.Wrap(err))
-//		return trace.Wrap(err)
-//	}
-//	go func() {
-//		err := sb.wait()
-//		log.Debugf("[SSH] %v finished with result: %v", sb, err)
-//		ctx.SendSubsystemResult(trace.Wrap(err))
-//	}()
-//	return nil
-//}
+func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
+	type subsystemRequest struct {
+		Name string
+	}
+	var sr subsystemRequest
+	err := ssh.Unmarshal(req.Payload, &sr)
+	if err != nil {
+		return trace.BadParameter("invalid subsystem request: %v", err)
+	}
+
+	subsystem := &remoteSubsystem{
+		ctx:          ctx,
+		subsytemName: sr.Name,
+	}
+
+	err = subsystem.Start(ch)
+	if err != nil {
+		ctx.Warnf("[REMOTE SUBSYSTEM] Failed to start subsystem: %q: %v", sr.Name, err)
+		ctx.SendSubsystemResult(trace.Wrap(err))
+		return trace.Wrap(err)
+	}
+
+	// in case if result is nil and no error, this means that program is
+	// running in the background
+	go func() {
+		err := subsystem.Wait()
+		log.Debugf("[REMOTE SUBSYSTEM] Subsystem %q finished result: %v", sr.Name, err)
+		ctx.SendSubsystemResult(err)
+	}()
+
+	return nil
+
+	//sb, err := parseSubsystemRequest(s, req)
+	//if err != nil {
+	//	ctx.Warnf("[SSH] %v failed to parse subsystem request: %v", err)
+	//	return trace.Wrap(err)
+	//}
+	//ctx.Debugf("[SSH] subsystem request: %v", sb)
+	//// starting subsystem is blocking to the client,
+	//// while collecting its result and waiting is not blocking
+	//if err := sb.start(ctx.Conn, ch, req, ctx); err != nil {
+	//	ctx.Warnf("[SSH] failed executing request: %v", err)
+	//	ctx.SendSubsystemResult(trace.Wrap(err))
+	//	return trace.Wrap(err)
+	//}
+	//go func() {
+	//	err := sb.wait()
+	//	log.Debugf("[SSH] %v finished with result: %v", sb, err)
+	//	ctx.SendSubsystemResult(trace.Wrap(err))
+	//}()
+	//return nil
+}
 
 // handleEnv accepts environment variables sent by the client and stores them
 // in connection context

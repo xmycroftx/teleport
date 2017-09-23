@@ -90,6 +90,7 @@ func NewAdminRole(isEnterprise bool) Role {
 		Spec: RoleSpecV3{
 			Options: RoleOptions{
 				MaxSessionTTL: NewDuration(defaults.MaxCertDuration),
+				ForwardAgent:  true,
 			},
 			Allow: RoleConditions{
 				Namespaces: []string{defaults.Namespace},

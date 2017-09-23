@@ -392,7 +392,7 @@ func (e *remoteExec) SetCmd(cmd string) {
 }
 
 func (r *remoteExec) Start(ch ssh.Channel) (*ExecResult, error) {
-	session, err := remoteSession(r.ctx)
+	session, err := RemoteSession(r.ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -425,7 +425,7 @@ func (r *remoteExec) Wait() (*ExecResult, error) {
 	r.ctx.Infof("[REMOTE EXEC] Command %q complete", r.cmdName)
 
 	// figure out if the command successfully exited or if it exited in failure
-	execResult, err := collectRemoteStatus(err)
+	execResult, err := CollectRemoteStatus(err)
 
 	// emit the result of execution to the audit log
 	emitExecAuditEvent(r.ctx, r.cmdName, execResult, err)

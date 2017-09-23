@@ -3,15 +3,18 @@ package srv
 import (
 	"crypto/subtle"
 	"net"
+	"os"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/trace"
+	log "github.com/sirupsen/logrus"
 )
 
-func remoteSession(ctx *ServerContext) (*ssh.Session, error) {
+func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	hostKeyChecker := func(hostport string, remote net.Addr, key ssh.PublicKey) error {
 		ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
 		if err != nil {
@@ -55,8 +58,15 @@ func remoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	//}
 
 	// TODO(russjones): Wait for the agent to be ready or a timeout.
-	<-ctx.AgentReady
-	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
+	//log.Errorf("waiting for agent")
+	//<-ctx.AgentReady
+	//log.Errorf("agent ready")
+	//authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
+	systemAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+	if err != nil {
+		return nil, err
+	}
+	authMethod := ssh.PublicKeysCallback(agent.NewClient(systemAgent).Signers)
 
 	clientConfig := &ssh.ClientConfig{
 		User: ctx.Login,
@@ -76,11 +86,12 @@ func remoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	log.Errorf("session ready")
 
 	return session, nil
 }
 
-func collectRemoteStatus(err error) (*ExecResult, error) {
+func CollectRemoteStatus(err error) (*ExecResult, error) {
 	if err != nil {
 		if exitErr, ok := err.(*ssh.ExitError); ok {
 			return &ExecResult{
