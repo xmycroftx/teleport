@@ -278,6 +278,7 @@ func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 	}
 
 	t := &remoteTerminal{
+		ctx:       ctx,
 		session:   session,
 		ptyBuffer: &ptyBuffer{},
 	}
@@ -329,10 +330,19 @@ func (t *remoteTerminal) Run() error {
 		return trace.Wrap(err)
 	}
 
+	// we want to run a "exec" command within a pty
+	if t.ctx.Exec != nil {
+		if err := t.session.Start(t.ctx.Exec.GetCmd()); err != nil {
+			return trace.Wrap(err)
+		}
+
+		return nil
+	}
+
+	// we want an interactive shell
 	if err := t.session.Shell(); err != nil {
 		return trace.Wrap(err)
 	}
-
 	return nil
 }
 

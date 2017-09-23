@@ -181,19 +181,14 @@ func (s *Server) Dial(conn net.Conn) error {
 	}
 	config.AddHostKey(hostKey)
 
-	log.Errorf("trying to make new server conn")
-
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
-		log.Errorf("newserverconn: err: %v", err)
 		return err
 	}
 
 	//sconn.Permissions = &ssh.Permissions{
 	//	Extensions: map[string]string{utils.CertTeleportUser: "rjones"},
 	//}
-
-	log.Errorf("new server conn: %v", sconn)
 
 	// global requests
 	go func() {
@@ -208,8 +203,6 @@ func (s *Server) Dial(conn net.Conn) error {
 			go s.handleChannel(conn, sconn, newChannel)
 		}
 	}()
-
-	log.Errorf("Dial done!")
 
 	return nil
 }

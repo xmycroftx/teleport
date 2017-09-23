@@ -245,8 +245,6 @@ func (c *ServerContext) GetEnv(key string) (string, bool) {
 }
 
 func NewServerContext(srv Server, conn *ssh.ServerConn) *ServerContext {
-	log.Errorf("conn.Permissions.Extensions: %v\n", conn.Permissions.Extensions)
-
 	ctx := &ServerContext{
 		env:              make(map[string]string),
 		Conn:             conn,
