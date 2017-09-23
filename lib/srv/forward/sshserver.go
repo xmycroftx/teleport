@@ -622,9 +622,11 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.Server
 
 	// get an existing terminal or create a new one
 	term := ctx.GetTerm()
+	log.Errorf("term: %v", term)
 	if term == nil {
 		term, err = psrv.NewRemoteTerminal(ctx)
 		if err != nil {
+			log.Errorf("NewRemoteTerminal error: %v", err)
 			return trace.Wrap(err)
 		}
 		ctx.SetTerm(term)

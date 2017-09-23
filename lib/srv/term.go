@@ -330,8 +330,14 @@ func (t *remoteTerminal) Run() error {
 		return trace.Wrap(err)
 	}
 
+	err = prepareSession(t.session, t.ctx)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
 	// we want to run a "exec" command within a pty
-	if t.ctx.Exec != nil {
+	if t.ctx.Exec.GetCmd() != "" {
+		log.Debugf("[REMOTE TERM] PTY allocated, running \"exec\" request within PTY.")
 		if err := t.session.Start(t.ctx.Exec.GetCmd()); err != nil {
 			return trace.Wrap(err)
 		}
@@ -340,6 +346,7 @@ func (t *remoteTerminal) Run() error {
 	}
 
 	// we want an interactive shell
+	log.Debugf("[REMOTE TERM] Requesting interactive shell.")
 	if err := t.session.Shell(); err != nil {
 		return trace.Wrap(err)
 	}

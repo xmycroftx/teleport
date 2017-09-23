@@ -107,6 +107,7 @@ func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
 	// try and find the server in the cache first
 	forwardServer, ok := s.forwardServerCache[to.String()]
 	if !ok {
+		log.Errorf("[PROXY] Creating new forwarding server! %v", to.String())
 		forwardServer, err = forward.New(s.client, to.String())
 		if err != nil {
 			return nil, err

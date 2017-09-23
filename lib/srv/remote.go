@@ -14,6 +14,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+var _ = os.SEEK_CUR
+var _ = agent.ForwardToRemote
+
 func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	hostKeyChecker := func(hostport string, remote net.Addr, key ssh.PublicKey) error {
 		ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
@@ -57,14 +60,14 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	//	},
 	//}
 
-	// TODO(russjones): Wait for the agent to be ready or a timeout.
+	//// TODO(russjones): Wait for the agent to be ready or a timeout.
 	//log.Errorf("waiting for agent")
 	//<-ctx.AgentReady
-	//log.Errorf("agent ready")
+	log.Errorf("agent ready")
 	//authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
 	systemAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
 	if err != nil {
-		return nil, err
+		return nil, trace.Wrap(err)
 	}
 	authMethod := ssh.PublicKeysCallback(agent.NewClient(systemAgent).Signers)
 
@@ -79,14 +82,13 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 
 	client, err := ssh.Dial("tcp", ctx.srv.AdvertiseAddr(), clientConfig)
 	if err != nil {
-		return nil, err
+		return nil, trace.Wrap(err)
 	}
 
 	session, err := client.NewSession()
 	if err != nil {
-		return nil, err
+		return nil, trace.Wrap(err)
 	}
-	log.Errorf("session ready")
 
 	return session, nil
 }
@@ -110,4 +112,24 @@ func CollectRemoteStatus(err error) (*ExecResult, error) {
 		Code:    teleport.RemoteCommandSuccess,
 		Command: "forward-shell",
 	}, nil
+}
+
+func prepareSession(session *ssh.Session, ctx *ServerContext) error {
+	if err := session.Setenv(teleport.SSHTeleportUser, ctx.TeleportUser); err != nil {
+		return trace.Wrap(err)
+	}
+	//if err := session.Setenv(teleport.SSHSessionWebproxyAddr, proxyHost); err != nil {
+	//	return trace.Wrap(err)
+	//}
+	if err := session.Setenv(teleport.SSHTeleportHostUUID, ctx.srv.ID()); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := session.Setenv(teleport.SSHTeleportClusterName, ctx.ClusterName); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := session.Setenv(teleport.SSHSessionID, string(ctx.session.id)); err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
 }

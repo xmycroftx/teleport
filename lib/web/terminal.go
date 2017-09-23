@@ -64,6 +64,7 @@ type nodeProvider interface {
 // newTerminal creates a web-based terminal based on WebSockets and returns a new
 // terminalHandler
 func newTerminal(req terminalRequest, provider nodeProvider, ctx *SessionContext) (*terminalHandler, error) {
+	log.Errorf("newTerminal: req.Server: %v", req.Server)
 	// make sure whatever session is requested is a valid session
 	_, err := session.ParseID(string(req.SessionID))
 	if err != nil {

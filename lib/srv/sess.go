@@ -89,13 +89,14 @@ func (s *SessionRegistry) OpenSession(ch ssh.Channel, req *ssh.Request, ctx *Ser
 	if ctx.session != nil {
 		// emit "joined session" event:
 		s.srv.EmitAuditEvent(events.SessionJoinEvent, events.EventFields{
-			events.SessionEventID:  string(ctx.session.id),
-			events.EventNamespace:  s.srv.GetNamespace(),
-			events.EventLogin:      ctx.Login,
-			events.EventUser:       ctx.TeleportUser,
-			events.LocalAddr:       ctx.Conn.LocalAddr().String(),
-			events.RemoteAddr:      ctx.Conn.RemoteAddr().String(),
-			events.SessionServerID: ctx.srv.ID(),
+			events.SessionEventID: string(ctx.session.id),
+			events.EventNamespace: s.srv.GetNamespace(),
+			events.EventLogin:     ctx.Login,
+			events.EventUser:      ctx.TeleportUser,
+			events.LocalAddr:      ctx.Conn.LocalAddr().String(),
+			events.RemoteAddr:     ctx.Conn.RemoteAddr().String(),
+			//events.SessionServerID: ctx.srv.ID(),
+			events.SessionServerID: ctx.srv.AdvertiseAddr(),
 		})
 		ctx.Infof("[SESSION] joining session: %v", ctx.session.id)
 		_, err := ctx.session.join(ch, req, ctx)
@@ -560,9 +561,10 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 
 	// emit "new session created" event:
 	s.registry.srv.EmitAuditEvent(events.SessionStartEvent, events.EventFields{
-		events.EventNamespace:  ctx.srv.GetNamespace(),
-		events.SessionEventID:  string(s.id),
-		events.SessionServerID: ctx.srv.ID(),
+		events.EventNamespace: ctx.srv.GetNamespace(),
+		events.SessionEventID: string(s.id),
+		//events.SessionServerID: ctx.srv.ID(),
+		events.SessionServerID: ctx.srv.AdvertiseAddr(),
 		events.EventLogin:      ctx.Login,
 		events.EventUser:       ctx.TeleportUser,
 		events.LocalAddr:       ctx.Conn.LocalAddr().String(),
