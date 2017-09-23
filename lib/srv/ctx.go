@@ -115,7 +115,8 @@ type ServerContext struct {
 	session *session
 
 	// full command asked to be executed in this context
-	Exec *ExecResponse
+	//Exec *ExecResponse
+	Exec Exec
 
 	// clusterName is the name of the cluster current user
 	// is authenticated with

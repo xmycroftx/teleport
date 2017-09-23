@@ -17,10 +17,10 @@ limitations under the License.
 package srv
 
 import (
-	"crypto/subtle"
+	//"crypto/subtle"
 	//"fmt"
 	"io"
-	"net"
+	//"net"
 	"os"
 	"os/exec"
 	"sync"
@@ -31,7 +31,7 @@ import (
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
-	"github.com/gravitational/teleport/lib/defaults"
+	//"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
@@ -272,69 +272,9 @@ func getHostCA(authService auth.AccessPoint, clusterName string) (services.CertA
 }
 
 func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
-	hostKeyChecker := func(hostport string, remote net.Addr, key ssh.PublicKey) error {
-		ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
-		if err != nil {
-			return trace.Wrap(err)
-		}
-
-		checkers, err := ca.Checkers()
-		if err != nil {
-			return trace.Wrap(err)
-		}
-
-		for _, checker := range checkers {
-			caMatch := subtle.ConstantTimeCompare(checker.Marshal(), key.Marshal()) == 1
-			if caMatch {
-				return trace.Wrap(err)
-			}
-		}
-		return nil
-	}
-
-	//checker := &ssh.CertChecker{
-	//	IsAuthority: func(p ssh.PublicKey) bool {
-	//		ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
-	//		if err != nil {
-	//			return false
-	//		}
-
-	//		checkers, err := ca.Checkers()
-	//		if err != nil {
-	//			return false
-	//		}
-
-	//		for _, checker := range checkers {
-	//			caMatch := subtle.ConstantTimeCompare(checker.Marshal(), p.Marshal()) == 1
-	//			if caMatch {
-	//				return false
-	//			}
-	//		}
-	//		return false
-	//	},
-	//}
-
-	// TODO(russjones): Wait for the agent to be ready or a timeout.
-	<-ctx.AgentReady
-	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
-
-	clientConfig := &ssh.ClientConfig{
-		User: ctx.Login,
-		Auth: []ssh.AuthMethod{
-			authMethod,
-		},
-		HostKeyCallback: hostKeyChecker,
-		Timeout:         defaults.DefaultDialTimeout,
-	}
-
-	client, err := ssh.Dial("tcp", ctx.srv.AdvertiseAddr(), clientConfig)
+	session, err := remoteSession(ctx)
 	if err != nil {
-		return nil, err
-	}
-
-	session, err := client.NewSession()
-	if err != nil {
-		return nil, err
+		return nil, trace.Wrap(err)
 	}
 
 	t := &remoteTerminal{

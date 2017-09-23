@@ -549,7 +549,7 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 	}
 
 	if err := s.term.Run(); err != nil {
-		ctx.Errorf("shell command (%v) failed: %v", ctx.Exec.CmdName, err)
+		ctx.Errorf("shell command (%v) failed: %v", ctx.Exec.GetCmd(), err)
 		return trace.ConvertSystemError(err)
 	}
 	if err := s.addParty(p); err != nil {

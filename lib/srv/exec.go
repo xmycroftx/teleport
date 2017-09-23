@@ -49,6 +49,13 @@ const (
 	defaultLoginDefsPath = "/etc/login.defs"
 )
 
+type Exec interface {
+	GetCmd() string
+	SetCmd(string)
+	Start(ch ssh.Channel) (*ExecResult, error)
+	Wait() (*ExecResult, error)
+}
+
 // execResult is used internally to send the result of a command execution from
 // a goroutine to SSH request handler and back to the calling client
 type ExecResult struct {
@@ -70,8 +77,17 @@ type ExecResponse struct {
 	Ctx     *ServerContext
 }
 
+func (e *ExecResponse) GetCmd() string {
+	return e.CmdName
+}
+
+func (e *ExecResponse) SetCmd(cmd string) {
+	e.CmdName = cmd
+}
+
 // parseExecRequest parses SSH exec request
-func ParseExecRequest(req *ssh.Request, ctx *ServerContext) (*ExecResponse, error) {
+//func ParseExecRequest(req *ssh.Request, ctx *ServerContext) (*ExecResponse, error) {
+func ParseExecRequest(req *ssh.Request, ctx *ServerContext) (Exec, error) {
 	var e execReq
 	if err := ssh.Unmarshal(req.Payload, &e); err != nil {
 		return nil, trace.BadParameter("failed to parse exec request, error: %v", err)
@@ -97,9 +113,13 @@ func ParseExecRequest(req *ssh.Request, ctx *ServerContext) (*ExecResponse, erro
 				strings.Join(args[1:], " "))
 		}
 	}
-	ctx.Exec = &ExecResponse{
-		Ctx:     ctx,
-		CmdName: e.Command,
+	//ctx.Exec = &ExecResponse{
+	//	Ctx:     ctx,
+	//	CmdName: e.Command,
+	//}
+	ctx.Exec = &remoteExec{
+		ctx:     ctx,
+		cmdName: e.Command,
 	}
 	return ctx.Exec, nil
 }
@@ -116,16 +136,17 @@ func prepInteractiveCommand(ctx *ServerContext) (*exec.Cmd, error) {
 		runShell bool
 	)
 	// determine shell for the given OS user:
-	if ctx.Exec.CmdName == "" {
+	if ctx.Exec.GetCmd() == "" {
 		runShell = true
-		ctx.Exec.CmdName, err = shell.GetLoginShell(ctx.Login)
+		cmdName, err := shell.GetLoginShell(ctx.Login)
+		ctx.Exec.SetCmd(cmdName)
 		if err != nil {
 			log.Error(err)
 			return nil, trace.Wrap(err)
 		}
 		// in test mode short-circuit to /bin/sh
 		if ctx.IsTestStub {
-			ctx.Exec.CmdName = "/bin/sh"
+			ctx.Exec.SetCmd("/bin/sh")
 		}
 	}
 	c, err := prepareCommand(ctx)
@@ -138,7 +159,7 @@ func prepInteractiveCommand(ctx *ServerContext) (*exec.Cmd, error) {
 	// this is a login shell."
 	// https://github.com/openssh/openssh-portable/blob/master/session.c
 	if runShell {
-		c.Args = []string{"-" + filepath.Base(ctx.Exec.CmdName)}
+		c.Args = []string{"-" + filepath.Base(ctx.Exec.GetCmd())}
 	}
 	return c, nil
 }
@@ -195,7 +216,7 @@ func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
 
 	// by default, execute command using user's shell like openssh does:
 	// https://github.com/openssh/openssh-portable/blob/master/session.c
-	c := exec.Command(shell, "-c", ctx.Exec.CmdName)
+	c := exec.Command(shell, "-c", ctx.Exec.GetCmd())
 
 	clusterName, err := ctx.srv.GetAuthService().GetDomainName()
 	if err != nil {
@@ -311,9 +332,14 @@ func (e *ExecResponse) Start(ch ssh.Channel) (*ExecResult, error) {
 
 	if err := e.Cmd.Start(); err != nil {
 		e.Ctx.Warningf("%v start failure err: %v", e, err)
-		return e.CollectStatus(e.Cmd, trace.ConvertSystemError(err))
+		execResult, err := collectLocalStatus(e.Cmd, trace.ConvertSystemError(err))
+
+		// emit the result of execution to the audit log
+		emitExecAuditEvent(e.Ctx, strings.Join(e.Cmd.Args, " "), execResult, err)
+
+		return execResult, trace.Wrap(err)
 	}
-	e.Ctx.Infof("%v started", e)
+	e.Ctx.Infof("[LOCAL EXEC] Started command: %q", e.CmdName)
 
 	return nil, nil
 }
@@ -322,36 +348,21 @@ func (e *ExecResponse) Wait() (*ExecResult, error) {
 	if e.Cmd.Process == nil {
 		e.Ctx.Errorf("no process")
 	}
+
+	// wait for the command to complete
 	err := e.Cmd.Wait()
-	return e.CollectStatus(e.Cmd, err)
+	e.Ctx.Infof("[LOCAL EXEC] Command %q complete", e.CmdName)
+
+	// figure out if the command successfully exited or if it exited in failure
+	execResult, err := collectLocalStatus(e.Cmd, err)
+
+	// emit the result of execution to the audit log
+	emitExecAuditEvent(e.Ctx, strings.Join(e.Cmd.Args, " "), execResult, err)
+
+	return execResult, trace.Wrap(err)
 }
 
-func (e *ExecResponse) CollectStatus(cmd *exec.Cmd, err error) (*ExecResult, error) {
-	status, err := collectStatus(e.Cmd, err)
-	// report the result of this exec event to the audit logger
-	auditLog := e.Ctx.srv.GetAuditLog()
-	if auditLog == nil {
-		return status, err
-	}
-	fields := events.EventFields{
-		events.ExecEventCommand: strings.Join(cmd.Args, " "),
-		events.EventUser:        e.Ctx.TeleportUser,
-		events.EventLogin:       e.Ctx.Login,
-		events.LocalAddr:        e.Ctx.Conn.LocalAddr().String(),
-		events.RemoteAddr:       e.Ctx.Conn.RemoteAddr().String(),
-		events.EventNamespace:   e.Ctx.srv.GetNamespace(),
-	}
-	if err != nil {
-		fields[events.ExecEventError] = err.Error()
-		if status != nil {
-			fields[events.ExecEventCode] = strconv.Itoa(status.Code)
-		}
-	}
-	auditLog.EmitAuditEvent(events.ExecEvent, fields)
-	return status, err
-}
-
-func collectStatus(cmd *exec.Cmd, err error) (*ExecResult, error) {
+func collectLocalStatus(cmd *exec.Cmd, err error) (*ExecResult, error) {
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			status := exitErr.Sys().(syscall.WaitStatus)
@@ -364,6 +375,86 @@ func collectStatus(cmd *exec.Cmd, err error) (*ExecResult, error) {
 		return nil, fmt.Errorf("unknown exit status: %T(%v)", cmd.ProcessState.Sys(), cmd.ProcessState.Sys())
 	}
 	return &ExecResult{Code: status.ExitStatus(), Command: cmd.Path}, nil
+}
+
+type remoteExec struct {
+	ctx     *ServerContext
+	session *ssh.Session
+	cmdName string
+}
+
+func (e *remoteExec) GetCmd() string {
+	return e.cmdName
+}
+
+func (e *remoteExec) SetCmd(cmd string) {
+	e.cmdName = cmd
+}
+
+func (r *remoteExec) Start(ch ssh.Channel) (*ExecResult, error) {
+	session, err := remoteSession(r.ctx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	r.session = session
+
+	session.Stdout = ch
+	session.Stderr = ch.Stderr()
+
+	inputWriter, err := session.StdinPipe()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	go func() {
+		io.Copy(inputWriter, ch)
+		inputWriter.Close()
+	}()
+
+	err = session.Start(r.cmdName)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	r.ctx.Infof("[REMOTE EXEC] Started command: %q", r.cmdName)
+
+	return nil, nil
+}
+
+func (r *remoteExec) Wait() (*ExecResult, error) {
+	// block until the remote command has finished execution
+	err := r.session.Wait()
+	r.ctx.Infof("[REMOTE EXEC] Command %q complete", r.cmdName)
+
+	// figure out if the command successfully exited or if it exited in failure
+	execResult, err := collectRemoteStatus(err)
+
+	// emit the result of execution to the audit log
+	emitExecAuditEvent(r.ctx, r.cmdName, execResult, err)
+
+	return execResult, trace.Wrap(err)
+}
+
+func emitExecAuditEvent(ctx *ServerContext, cmd string, status *ExecResult, err error) {
+	// report the result of this exec event to the audit logger
+	auditLog := ctx.srv.GetAuditLog()
+	if auditLog == nil {
+		log.Warnf("No audit log")
+		return
+	}
+	fields := events.EventFields{
+		events.ExecEventCommand: cmd,
+		events.EventUser:        ctx.TeleportUser,
+		events.EventLogin:       ctx.Login,
+		events.LocalAddr:        ctx.Conn.LocalAddr().String(),
+		events.RemoteAddr:       ctx.Conn.RemoteAddr().String(),
+		events.EventNamespace:   ctx.srv.GetNamespace(),
+	}
+	if err != nil {
+		fields[events.ExecEventError] = err.Error()
+		if status != nil {
+			fields[events.ExecEventCode] = strconv.Itoa(status.Code)
+		}
+	}
+	auditLog.EmitAuditEvent(events.ExecEvent, fields)
 }
 
 // getDefaultEnvPath returns the default value of PATH environment variable for

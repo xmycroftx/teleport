@@ -3,10 +3,11 @@ package forward
 import (
 	"crypto/subtle"
 	"fmt"
-	//"io"
+	"io"
 	//"io/ioutil"
 	"net"
 	//"os"
+	"sync"
 	//"time"
 
 	"golang.org/x/crypto/ssh"
@@ -337,61 +338,61 @@ func (s *Server) handleChannel(nc net.Conn, sconn *ssh.ServerConn, nch ssh.NewCh
 			log.Infof("could not accept channel (%s)", err)
 		}
 		go s.handleSessionRequests(sconn, ch, requests)
-	//case "direct-tcpip": //port forwarding
-	//	req, err := sshutils.ParseDirectTCPIPReq(nch.ExtraData())
-	//	if err != nil {
-	//		log.Errorf("failed to parse request data: %v, err: %v", string(nch.ExtraData()), err)
-	//		nch.Reject(ssh.UnknownChannelType, "failed to parse direct-tcpip request")
-	//	}
-	//	ch, _, err := nch.Accept()
-	//	if err != nil {
-	//		log.Infof("could not accept channel (%s)", err)
-	//	}
-	//	go s.handleDirectTCPIPRequest(sconn, ch, req)
+	case "direct-tcpip": //port forwarding
+		req, err := sshutils.ParseDirectTCPIPReq(nch.ExtraData())
+		if err != nil {
+			log.Errorf("failed to parse request data: %v, err: %v", string(nch.ExtraData()), err)
+			nch.Reject(ssh.UnknownChannelType, "failed to parse direct-tcpip request")
+		}
+		ch, _, err := nch.Accept()
+		if err != nil {
+			log.Infof("could not accept channel (%s)", err)
+		}
+		go s.handleDirectTCPIPRequest(sconn, ch, req)
 	default:
 		nch.Reject(ssh.UnknownChannelType, fmt.Sprintf("unknown channel type: %v", channelType))
 	}
 }
 
-//// handleDirectTCPIPRequest does the port forwarding
-//func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel, req *sshutils.DirectTCPIPReq) {
-//	// ctx holds the connection context and keeps track of the associated resources
-//	ctx := psrv.NewServerContext(s, sconn)
-//	ctx.IsTestStub = s.isTestStub
-//	ctx.AddCloser(ch)
-//	defer ctx.Debugf("direct-tcp closed")
-//	defer ctx.Close()
-//
-//	addr := fmt.Sprintf("%v:%d", req.Host, req.Port)
-//	ctx.Infof("direct-tcpip channel: %#v to --> %v", req, addr)
-//	conn, err := net.Dial("tcp", addr)
-//	if err != nil {
-//		ctx.Infof("failed connecting to: %v, err: %v", addr, err)
-//		return
-//	}
-//	defer conn.Close()
-//	// audit event:
-//	s.EmitAuditEvent(events.PortForwardEvent, events.EventFields{
-//		events.PortForwardAddr: addr,
-//		events.EventLogin:      ctx.Login,
-//		events.LocalAddr:       sconn.LocalAddr().String(),
-//		events.RemoteAddr:      sconn.RemoteAddr().String(),
-//	})
-//	wg := &sync.WaitGroup{}
-//	wg.Add(1)
-//	go func() {
-//		defer wg.Done()
-//		io.Copy(ch, conn)
-//		ch.Close()
-//	}()
-//	wg.Add(1)
-//	go func() {
-//		defer wg.Done()
-//		io.Copy(conn, ch)
-//		conn.Close()
-//	}()
-//	wg.Wait()
-//}
+// handleDirectTCPIPRequest does the port forwarding
+func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel, req *sshutils.DirectTCPIPReq) {
+	// ctx holds the connection context and keeps track of the associated resources
+	ctx := psrv.NewServerContext(s, sconn)
+	//ctx.IsTestStub = s.isTestStub
+	ctx.AddCloser(ch)
+	defer ctx.Debugf("direct-tcp closed")
+	defer ctx.Close()
+
+	addr := fmt.Sprintf("%v:%d", req.Host, req.Port)
+	ctx.Infof("direct-tcpip channel: %#v to --> %v", req, addr)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		ctx.Infof("failed connecting to: %v, err: %v", addr, err)
+		return
+	}
+	defer conn.Close()
+	// audit event:
+	s.EmitAuditEvent(events.PortForwardEvent, events.EventFields{
+		events.PortForwardAddr: addr,
+		events.EventLogin:      ctx.Login,
+		events.LocalAddr:       sconn.LocalAddr().String(),
+		events.RemoteAddr:      sconn.RemoteAddr().String(),
+	})
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		io.Copy(ch, conn)
+		ch.Close()
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		io.Copy(conn, ch)
+		conn.Close()
+	}()
+	wg.Wait()
+}
 
 // handleTerminalResize is called by the web proxy via its SSH connection.
 // when a web browser connects to the web API, the web proxy asks us,
@@ -468,9 +469,9 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 // appropriate subsystem implementation
 func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
 	switch req.Type {
-	//case "exec":
-	//	// exec is a remote execution of a program, does not use PTY
-	//	return s.handleExec(ch, req, ctx)
+	case "exec":
+		// exec is a remote execution of a program, does not use PTY
+		return s.handleExec(ch, req, ctx)
 	case sshutils.PTYReq:
 		// SSH client asked to allocate PTY
 		return s.handlePTYReq(ch, req, ctx)
@@ -651,52 +652,52 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.Server
 	return nil
 }
 
-//// handleExec is responsible for executing 'exec' SSH requests (i.e. executing
-//// a command after making an SSH connection)
-////
-//// Note: this also handles 'scp' requests because 'scp' is a subset of "exec"
-//func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
-//	execResponse, err := psrv.ParseExecRequest(req, ctx)
-//	if err != nil {
-//		ctx.Infof("failed to parse exec request: %v", err)
-//		replyError(ch, req, err)
-//		return trace.Wrap(err)
-//	}
-//	if req.WantReply {
-//		req.Reply(true, nil)
-//	}
-//	// a terminal has been previously allocate for this command.
-//	// run this inside an interactive session
-//	if ctx.GetTerm() != nil {
-//		return s.reg.OpenSession(ch, req, ctx)
-//	}
-//	// ... otherwise, regular execution:
-//	result, err := execResponse.Start(ch)
-//	if err != nil {
-//		ctx.Error(err)
-//		replyError(ch, req, err)
-//	}
-//	if result != nil {
-//		ctx.Debugf("%v result collected: %v", execResponse, result)
-//		ctx.SendResult(*result)
-//	}
-//	if err != nil {
-//		return trace.Wrap(err)
-//	}
+// handleExec is responsible for executing 'exec' SSH requests (i.e. executing
+// a command after making an SSH connection)
 //
-//	// in case if result is nil and no error, this means that program is
-//	// running in the background
-//	go func() {
-//		result, err = execResponse.Wait()
-//		if err != nil {
-//			ctx.Errorf("%v wait failed: %v", execResponse, err)
-//		}
-//		if result != nil {
-//			ctx.SendResult(*result)
-//		}
-//	}()
-//	return nil
-//}
+// Note: this also handles 'scp' requests because 'scp' is a subset of "exec"
+func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
+	execResponse, err := psrv.ParseExecRequest(req, ctx)
+	if err != nil {
+		ctx.Infof("failed to parse exec request: %v", err)
+		replyError(ch, req, err)
+		return trace.Wrap(err)
+	}
+	if req.WantReply {
+		req.Reply(true, nil)
+	}
+	// a terminal has been previously allocate for this command.
+	// run this inside an interactive session
+	if ctx.GetTerm() != nil {
+		return s.reg.OpenSession(ch, req, ctx)
+	}
+	// ... otherwise, regular execution:
+	result, err := execResponse.Start(ch)
+	if err != nil {
+		ctx.Error(err)
+		replyError(ch, req, err)
+	}
+	if result != nil {
+		ctx.Debugf("%v result collected: %v", execResponse, result)
+		ctx.SendResult(*result)
+	}
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	// in case if result is nil and no error, this means that program is
+	// running in the background
+	go func() {
+		result, err = execResponse.Wait()
+		if err != nil {
+			ctx.Errorf("%v wait failed: %v", execResponse, err)
+		}
+		if result != nil {
+			ctx.SendResult(*result)
+		}
+	}()
+	return nil
+}
 
 // handleKeepAlive accepts and replies to keepalive@openssh.com requests.
 func (s *Server) handleKeepAlive(req *ssh.Request) {

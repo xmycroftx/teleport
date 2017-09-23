@@ -48,6 +48,7 @@ func newlocalSite(srv *server, domainName string, client auth.ClientI) (*localSi
 				"type":       "localSite",
 			},
 		}),
+		forwardServerCache: make(map[string]*forward.Server),
 	}, nil
 }
 
@@ -67,6 +68,8 @@ type localSite struct {
 	lastActive  time.Time
 	srv         *server
 	accessPoint auth.AccessPoint
+
+	forwardServerCache map[string]*forward.Server
 }
 
 func (s *localSite) CachingAccessPoint() (auth.AccessPoint, error) {
@@ -95,21 +98,26 @@ func (s *localSite) GetLastConnected() time.Time {
 
 // Dial dials a given host in this site (cluster).
 func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
+	s.Lock()
+	defer s.Unlock()
+
+	var err error
 	s.log.Debugf("[PROXY] localSite.Dial(from=%v, to=%v)", from, to)
-	fakeServer, err := forward.New(s.client, to.String())
-	if err != nil {
-		log.Errorf("fwd.New: error: %v", err)
-		return nil, err
+
+	// try and find the server in the cache first
+	forwardServer, ok := s.forwardServerCache[to.String()]
+	if !ok {
+		forwardServer, err = forward.New(s.client, to.String())
+		if err != nil {
+			return nil, err
+		}
+		s.forwardServerCache[to.String()] = forwardServer
 	}
-	log.Errorf("fakeServer: %v", fakeServer)
 
 	server, client := net.Pipe()
-	log.Errorf("trying to dial")
-	go fakeServer.Dial(server)
+	go forwardServer.Dial(server)
 
-	log.Errorf("localSite.Dial: done")
 	return client, nil
-
 	//return net.Dial(to.Network(), to.String())
 }
 
