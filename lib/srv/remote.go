@@ -1,7 +1,7 @@
 package srv
 
 import (
-	"crypto/subtle"
+	//"crypto/subtle"
 	"net"
 	"os"
 
@@ -10,6 +10,8 @@ import (
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/defaults"
+	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/trace"
 	log "github.com/sirupsen/logrus"
 )
@@ -19,22 +21,47 @@ var _ = agent.ForwardToRemote
 
 func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	hostKeyChecker := func(hostport string, remote net.Addr, key ssh.PublicKey) error {
-		ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
-		if err != nil {
-			return trace.Wrap(err)
-		}
-
-		checkers, err := ca.Checkers()
-		if err != nil {
-			return trace.Wrap(err)
-		}
-
-		for _, checker := range checkers {
-			caMatch := subtle.ConstantTimeCompare(checker.Marshal(), key.Marshal()) == 1
-			if caMatch {
+		cert, ok := key.(*ssh.Certificate)
+		if ok {
+			// find cert authority by it's key
+			cas, err := ctx.srv.GetAuthService().GetCertAuthorities(services.HostCA, false)
+			if err != nil {
 				return trace.Wrap(err)
 			}
+
+			for i := range cas {
+				checkers, err := cas[i].Checkers()
+				if err != nil {
+					return trace.Wrap(err)
+				}
+
+				for _, checker := range checkers {
+					if sshutils.KeysEqual(cert.SignatureKey, checker) {
+						return nil
+					}
+				}
+			}
+
+			return trace.BadParameter("invalid cert")
+			//ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
+			//if err != nil {
+			//	return trace.Wrap(err)
+			//}
+
+			//checkers, err := ca.Checkers()
+			//if err != nil {
+			//	return trace.Wrap(err)
+			//}
+
+			//for _, checker := range checkers {
+			//	caMatch := subtle.ConstantTimeCompare(checker.Marshal(), key.Marshal()) == 1
+			//	if caMatch {
+			//		return nil
+			//	}
+			//}
+			//return trace.BadParameter("invalid cert")
 		}
+		// take any valid public key and if we have gotten to this point we have a valid public key
 		return nil
 	}
 
@@ -61,15 +88,15 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	//}
 
 	//// TODO(russjones): Wait for the agent to be ready or a timeout.
-	//log.Errorf("waiting for agent")
-	//<-ctx.AgentReady
+	log.Errorf("waiting for agent")
+	<-ctx.AgentReady
 	log.Errorf("agent ready")
-	//authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
-	systemAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	authMethod := ssh.PublicKeysCallback(agent.NewClient(systemAgent).Signers)
+	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
+	//systemAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+	//if err != nil {
+	//	return nil, trace.Wrap(err)
+	//}
+	//authMethod := ssh.PublicKeysCallback(agent.NewClient(systemAgent).Signers)
 
 	clientConfig := &ssh.ClientConfig{
 		User: ctx.Login,

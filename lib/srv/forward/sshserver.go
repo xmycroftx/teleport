@@ -231,7 +231,9 @@ func (s *Server) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permiss
 					}
 				}
 			}
+
 			return false
+
 			//checkingKeys, err := getUserCA(s.client)
 			//if err != nil {
 			//	return false
