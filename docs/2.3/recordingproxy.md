@@ -56,6 +56,14 @@ Add the above line to `~/.ssh/known_hosts` for a single user, or `/etc/ssh/ssh_k
 
 ### Examples
 
+#### Load Teleport User Certificate
+
+Make sure to login to Teleport and load your certificates into your `ssh-agent`:
+
+```bash
+tsh --proxy=proxy.example.com --user=rjones login
+```
+
 #### Interactive Sessions
 
 For obtain an interactive sessions (shell), use a command like the following:
