@@ -31,7 +31,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
-	"github.com/gravitational/teleport/lib/srv/forward"
+	//"github.com/gravitational/teleport/lib/srv/forward"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/teleport/lib/utils/proxy"
@@ -258,23 +258,23 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 
 	var conn net.Conn
 	var err error
-	var serverconn net.Conn
+	//var serverconn net.Conn
 
 	// loop over all servers and try and connect to one of them
 	for _, s := range servers {
-		if s == "node.example.com:22" {
-			log.Errorf("tring to forward!!: %v", s)
-			forwardServer, err := forward.New(a.clt, s)
-			if err != nil {
-				log.Errorf("unable to create forward server: %v", err)
-				return
-			}
+		//if s == "node.example.com:22" {
+		//	log.Errorf("tring to forward!!: %v", s)
+		//	forwardServer, err := forward.New(a.clt, s)
+		//	if err != nil {
+		//		log.Errorf("unable to create forward server: %v", err)
+		//		return
+		//	}
 
-			serverconn, conn = net.Pipe()
-			go forwardServer.Dial(serverconn)
+		//	serverconn, conn = net.Pipe()
+		//	go forwardServer.Dial(serverconn)
 
-			break
-		}
+		//	break
+		//}
 
 		conn, err = net.Dial("tcp", s)
 		if err == nil {

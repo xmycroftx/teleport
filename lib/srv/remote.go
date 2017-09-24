@@ -4,6 +4,7 @@ import (
 	//"crypto/subtle"
 	"net"
 	"os"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -42,7 +43,7 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 				}
 			}
 
-			return trace.BadParameter("invalid cert")
+			return trace.BadParameter("invalid host cert")
 			//ca, err := getHostCA(ctx.srv.GetAuthService(), ctx.ClusterName)
 			//if err != nil {
 			//	return trace.Wrap(err)
@@ -88,15 +89,14 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	//}
 
 	//// TODO(russjones): Wait for the agent to be ready or a timeout.
-	log.Errorf("waiting for agent")
-	<-ctx.AgentReady
-	log.Errorf("agent ready")
+	log.Debugf("[Remote Session] Waiting for agent")
+	select {
+	case <-time.After(10 * time.Second):
+		return nil, trace.AccessDenied("timeout waiting for agent")
+	case <-ctx.AgentReady:
+	}
+	log.Debugf("[Remote Session] Agent ready")
 	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
-	//systemAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
-	//if err != nil {
-	//	return nil, trace.Wrap(err)
-	//}
-	//authMethod := ssh.PublicKeysCallback(agent.NewClient(systemAgent).Signers)
 
 	clientConfig := &ssh.ClientConfig{
 		User: ctx.Login,

@@ -522,7 +522,6 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 
 func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
 	// check if the role allows agent forwarding
-	log.Errorf("handleAgentForward: ctx.ClusterName: %v", ctx.ClusterName)
 	roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
 	if err != nil {
 		return trace.Wrap(err)
@@ -645,11 +644,9 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.Server
 
 	// get an existing terminal or create a new one
 	term := ctx.GetTerm()
-	log.Errorf("term: %v", term)
 	if term == nil {
 		term, err = psrv.NewRemoteTerminal(ctx)
 		if err != nil {
-			log.Errorf("NewRemoteTerminal error: %v", err)
 			return trace.Wrap(err)
 		}
 		ctx.SetTerm(term)
@@ -904,7 +901,6 @@ func (s *Server) fetchRoleSet(teleportUser string, clusterName string) (services
 
 	var roles services.RoleSet
 	if localClusterName == clusterName {
-		log.Errorf("local cluster name match")
 		users, err := s.client.GetUsers()
 		if err != nil {
 			return nil, trace.Wrap(err)
@@ -918,13 +914,11 @@ func (s *Server) fetchRoleSet(teleportUser string, clusterName string) (services
 			}
 		}
 	} else {
-		log.Errorf("remote lcuster")
 		roles, err = services.FetchRoles(ca.GetRoles(), s.client, nil)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 	}
 
-	log.Errorf("fetchRoleSet: returning roles: %v", roles)
 	return roles, err
 }
