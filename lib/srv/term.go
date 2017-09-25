@@ -62,6 +62,7 @@ type Terminal interface {
 	GetWinSize() (*term.Winsize, error)
 	SetWinSize(params rsession.TerminalParams) error
 	GetTerminalParams() rsession.TerminalParams
+	SetTermType(string)
 }
 
 // terminal is a local PTY created by Teleport nodes.
@@ -162,6 +163,10 @@ func (t *terminal) TTY() *os.File {
 	return t.tty
 }
 
+func (t *terminal) SetTermType(term string) {
+	return
+}
+
 func (t *terminal) GetWinSize() (*term.Winsize, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -253,6 +258,7 @@ type remoteTerminal struct {
 	session   *ssh.Session
 	params    rsession.TerminalParams
 	ptyBuffer *ptyBuffer
+	termType  string
 }
 
 // TODO(russjones): Use GetCertAuthority instead.
@@ -326,12 +332,11 @@ func (t *remoteTerminal) Run() error {
 	//ssh.TTY_OP_OSPEED: 14400,
 	}
 
-	if err := t.session.RequestPty("xterm", t.params.W, t.params.H, modes); err != nil {
-		return trace.Wrap(err)
+	if t.termType == "" {
+		t.termType = "xterm"
 	}
 
-	err = prepareSession(t.session, t.ctx)
-	if err != nil {
+	if err := t.session.RequestPty(t.termType, t.params.W, t.params.H, modes); err != nil {
 		return trace.Wrap(err)
 	}
 
@@ -429,6 +434,10 @@ func (t *remoteTerminal) GetTerminalParams() rsession.TerminalParams {
 	defer t.mu.Unlock()
 
 	return t.params
+}
+
+func (t *remoteTerminal) SetTermType(term string) {
+	t.termType = term
 }
 
 func (t *remoteTerminal) windowChange(w int, h int) error {

@@ -1058,6 +1058,7 @@ func (s *Server) handleEnv(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCon
 		ctx.Error(err)
 		return trace.Wrap(err, "failed to parse env request")
 	}
+	log.Errorf("handleEnv: %v %v", e.Name, e.Value)
 	ctx.SetEnv(e.Name, e.Value)
 	return nil
 }

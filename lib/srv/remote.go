@@ -117,6 +117,11 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 		return nil, trace.Wrap(err)
 	}
 
+	err = prepareSession(session, ctx)
+	if err != nil {
+		log.Warnf("[Remote Session] Unable to set environment variables, this will prevent session sharing: %v", err)
+	}
+
 	return session, nil
 }
 
@@ -143,19 +148,19 @@ func CollectRemoteStatus(err error) (*ExecResult, error) {
 
 func prepareSession(session *ssh.Session, ctx *ServerContext) error {
 	if err := session.Setenv(teleport.SSHTeleportUser, ctx.TeleportUser); err != nil {
-		return trace.Wrap(err)
+		return trace.BadParameter("unable to set environment variable: %v: %v", teleport.SSHTeleportUser, err)
 	}
 	//if err := session.Setenv(teleport.SSHSessionWebproxyAddr, proxyHost); err != nil {
 	//	return trace.Wrap(err)
 	//}
 	if err := session.Setenv(teleport.SSHTeleportHostUUID, ctx.srv.ID()); err != nil {
-		return trace.Wrap(err)
+		return trace.BadParameter("unable to set environment variable: %v: %v", teleport.SSHTeleportHostUUID, err)
 	}
 	if err := session.Setenv(teleport.SSHTeleportClusterName, ctx.ClusterName); err != nil {
-		return trace.Wrap(err)
+		return trace.BadParameter("unable to set environment variable: %v: %v", teleport.SSHTeleportClusterName, err)
 	}
 	if err := session.Setenv(teleport.SSHSessionID, string(ctx.session.id)); err != nil {
-		return trace.Wrap(err)
+		return trace.BadParameter("unable to set environment variable: %v: %v", teleport.SSHSessionID, err)
 	}
 
 	return nil

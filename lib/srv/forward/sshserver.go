@@ -636,6 +636,7 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.Server
 	if err != nil {
 		return trace.Wrap(err)
 	}
+
 	params, err := rsession.NewTerminalParamsFromUint32(r.W, r.H)
 	if err != nil {
 		return trace.Wrap(err)
@@ -652,6 +653,7 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.Server
 		ctx.SetTerm(term)
 	}
 	term.SetWinSize(*params)
+	term.SetTermType(r.Env)
 
 	// update the session:
 	if err := s.reg.NotifyWinChange(*params, ctx); err != nil {
