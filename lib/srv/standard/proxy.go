@@ -153,6 +153,7 @@ func (t *proxySubsys) start(sconn *ssh.ServerConn, ch ssh.Channel, req *ssh.Requ
 			site = sites[0]
 			log.Debugf("[PROXY] subsystem: cluster not specified. connecting to default='%s'", site.GetName())
 		}
+		site.SetAgent(ctx.GetAgent(), ctx.GetAgentChannel())
 		return t.proxyToHost(site, clientAddr, ch)
 	}
 	// connect to a site's auth server:

@@ -167,6 +167,12 @@ func (c *ServerContext) GetAgent() agent.Agent {
 	return c.agent
 }
 
+func (c *ServerContext) GetAgentChannel() ssh.Channel {
+	c.RLock()
+	defer c.RUnlock()
+	return c.agentCh
+}
+
 func (c *ServerContext) SetAgent(a agent.Agent, ch ssh.Channel) {
 	c.Lock()
 	defer c.Unlock()

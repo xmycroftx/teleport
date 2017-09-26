@@ -35,6 +35,7 @@ import (
 
 	"github.com/mailgun/oxy/forward"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 // remoteSite is a remote site who established the inbound connecton to
@@ -53,6 +54,10 @@ type remoteSite struct {
 	transport   *http.Transport
 	clt         *auth.Client
 	accessPoint auth.AccessPoint
+}
+
+func (s *remoteSite) SetAgent(a agent.Agent, ch ssh.Channel) {
+	return
 }
 
 func (s *remoteSite) CachingAccessPoint() (auth.AccessPoint, error) {

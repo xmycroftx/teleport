@@ -22,6 +22,9 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/services"
@@ -69,6 +72,9 @@ type localSite struct {
 	srv         *server
 	accessPoint auth.AccessPoint
 
+	agent     agent.Agent
+	agentChan ssh.Channel
+	//agentReady chan bool
 	forwardServerCache map[string]*forward.Server
 }
 
@@ -96,6 +102,12 @@ func (s *localSite) GetLastConnected() time.Time {
 	return time.Now()
 }
 
+func (s *localSite) SetAgent(a agent.Agent, ch ssh.Channel) {
+	log.Errorf("SetAgent called!: %v %v", a, ch)
+	s.agent = a
+	s.agentChan = ch
+}
+
 // Dial dials a given host in this site (cluster).
 func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
 	s.Lock()
@@ -104,15 +116,9 @@ func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
 	var err error
 	s.log.Debugf("[PROXY] localSite.Dial(from=%v, to=%v)", from, to)
 
-	// try and find the server in the cache first
-	forwardServer, ok := s.forwardServerCache[to.String()]
-	if !ok {
-		log.Errorf("[PROXY] Creating new forwarding server! %v", to.String())
-		forwardServer, err = forward.New(s.client, to.String())
-		if err != nil {
-			return nil, err
-		}
-		s.forwardServerCache[to.String()] = forwardServer
+	forwardServer, err := forward.New(s.client, s.agent, to.String())
+	if err != nil {
+		return nil, err
 	}
 
 	server, client := net.Pipe()

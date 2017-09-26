@@ -710,6 +710,12 @@ func (s *Server) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permiss
 	// connection
 	permissions.Extensions[utils.CertTeleportUser] = teleportUser
 
+	domainName, err := s.authService.GetDomainName()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	permissions.Extensions[utils.CertTeleportClusterName] = domainName
+
 	if s.proxyMode {
 		return permissions, nil
 	}
@@ -902,6 +908,10 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 		case "env":
 			// we currently ignore setting any environment variables via SSH for security purposes
 			return s.handleEnv(ch, req, ctx)
+		// TODO(russjones): Only allow agent forwarding on the proxy when it's in
+		// recording mode.
+		case "auth-agent-req@openssh.com":
+			return s.handleAgentForward(ch, req, ctx)
 		default:
 			return trace.BadParameter(
 				"proxy doesn't support request type '%v'", req.Type)
@@ -945,6 +955,7 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 	}
 }
 
+// TODO(russjones): A listening socket is only required when not in recording proxy mode.
 func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
 	roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
 	if err != nil {

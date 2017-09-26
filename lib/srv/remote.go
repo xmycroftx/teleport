@@ -4,7 +4,7 @@ import (
 	//"crypto/subtle"
 	"net"
 	"os"
-	"time"
+	//"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -89,13 +89,13 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	//}
 
 	//// TODO(russjones): Wait for the agent to be ready or a timeout.
-	log.Debugf("[Remote Session] Waiting for agent")
-	select {
-	case <-time.After(10 * time.Second):
-		return nil, trace.AccessDenied("timeout waiting for agent")
-	case <-ctx.AgentReady:
-	}
-	log.Debugf("[Remote Session] Agent ready")
+	//log.Debugf("[Remote Session] Waiting for agent")
+	//select {
+	//case <-time.After(10 * time.Second):
+	//	return nil, trace.AccessDenied("timeout waiting for agent")
+	//case <-ctx.AgentReady:
+	//}
+	//log.Debugf("[Remote Session] Agent ready")
 	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
 
 	clientConfig := &ssh.ClientConfig{
