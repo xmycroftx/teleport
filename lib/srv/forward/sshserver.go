@@ -433,7 +433,11 @@ func (s *Server) handleTerminalResize(sconn *ssh.ServerConn, ch ssh.Channel) {
 func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in <-chan *ssh.Request) {
 	// ctx holds the connection context and keeps track of the associated resources
 	ctx := psrv.NewServerContext(s, sconn)
+	// if the proxycommand is where we are forwarding the agent, then we need to
+	// keep that in mind (we don't need to wait for the agent to be ready, it's
+	// already ready)
 	ctx.SetAgent(s.agent, s.agentChan)
+	ctx.AgentProxyCommand = true
 	//ctx.IsTestStub = s.isTestStub
 	ctx.AddCloser(ch)
 	defer ctx.Close()
@@ -512,41 +516,41 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 		return s.handleSubsystem(ch, req, ctx)
 	case sshutils.WindowChangeReq:
 		return s.handleWinChange(ch, req, ctx)
-	//case sshutils.AgentReq:
-	//	// This happens when SSH client has agent forwarding enabled, in this case
-	//	// client sends a special request, in return SSH server opens new channel
-	//	// that uses SSH protocol for agent drafted here:
-	//	// https://tools.ietf.org/html/draft-ietf-secsh-agent-02
-	//	// the open ssh proto spec that we implement is here:
-	//	// http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.agent
-	//	return s.handleAgentForward(ch, req, ctx)
+	case sshutils.AgentReq:
+		// This happens when SSH client has agent forwarding enabled, in this case
+		// client sends a special request, in return SSH server opens new channel
+		// that uses SSH protocol for agent drafted here:
+		// https://tools.ietf.org/html/draft-ietf-secsh-agent-02
+		// the open ssh proto spec that we implement is here:
+		// http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.agent
+		return s.handleAgentForward(ch, req, ctx)
 	default:
 		return trace.BadParameter(
-			"proxy doesn't support request type '%v'", req.Type)
+			"(forward) proxy doesn't support request type '%v'", req.Type)
 	}
 }
 
-//func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
-//	// check if the role allows agent forwarding
-//	roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
-//	if err != nil {
-//		return trace.Wrap(err)
-//	}
-//	if err := roles.CheckAgentForward(ctx.Login); err != nil {
-//		log.Warningf("[SSH:node] denied forward agent %v", err)
-//		return trace.Wrap(err)
-//	}
-//
-//	authChannel, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
-//	if err != nil {
-//		return err
-//	}
-//	ctx.SetAgent(agent.NewClient(authChannel), authChannel)
-//
-//	close(ctx.AgentReady)
-//
-//	return nil
-//}
+func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
+	// check if the role allows agent forwarding
+	roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	if err := roles.CheckAgentForward(ctx.Login); err != nil {
+		log.Warningf("[SSH:node] denied forward agent %v", err)
+		return trace.Wrap(err)
+	}
+
+	authChannel, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
+	if err != nil {
+		return err
+	}
+	ctx.SetAgent(agent.NewClient(authChannel), authChannel)
+
+	close(ctx.AgentReady)
+
+	return nil
+}
 
 // handleWinChange gets called when 'window chnged' SSH request comes in
 func (s *Server) handleWinChange(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {

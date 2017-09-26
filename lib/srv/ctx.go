@@ -81,6 +81,8 @@ type ServerContext struct {
 	// term holds PTY if it was requested by the session
 	term Terminal
 
+	AgentProxyCommand bool
+
 	// agent is a client to remote SSH agent
 	agent agent.Agent
 

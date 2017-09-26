@@ -714,6 +714,8 @@ func (s *Server) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permiss
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+	// only way to pass the cluster name. this is used to determine if you are
+	// in the local to remote cluster.
 	permissions.Extensions[utils.CertTeleportClusterName] = domainName
 
 	if s.proxyMode {
@@ -951,7 +953,7 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 		return s.handleAgentForward(ch, req, ctx)
 	default:
 		return trace.BadParameter(
-			"proxy doesn't support request type '%v'", req.Type)
+			"(standard) proxy doesn't support request type '%v'", req.Type)
 	}
 }
 
