@@ -545,6 +545,7 @@ func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.
 	if err != nil {
 		return err
 	}
+	log.Debugf("[SSH:forward] Overwriting agent with agent passed in by client")
 	ctx.SetAgent(agent.NewClient(authChannel), authChannel)
 
 	close(ctx.AgentReady)
