@@ -93,26 +93,27 @@ func ParseExecRequest(req *ssh.Request, ctx *ServerContext) (Exec, error) {
 		return nil, trace.BadParameter("failed to parse exec request, error: %v", err)
 	}
 
-	// split up command by space to grab the first word
-	args := strings.Split(e.Command, " ")
+	//// split up command by space to grab the first word
+	//args := strings.Split(e.Command, " ")
 
-	if len(args) > 0 {
-		_, f := filepath.Split(args[0])
+	//if len(args) > 0 {
+	//	_, f := filepath.Split(args[0])
 
-		// is this scp request?
-		if f == "scp" {
-			// for 'scp' requests, we'll launch ourselves with scp parameters:
-			teleportBin, err := osext.Executable()
-			if err != nil {
-				return nil, trace.Wrap(err)
-			}
-			e.Command = fmt.Sprintf("%s scp --remote-addr=%s --local-addr=%s %v",
-				teleportBin,
-				ctx.Conn.RemoteAddr().String(),
-				ctx.Conn.LocalAddr().String(),
-				strings.Join(args[1:], " "))
-		}
-	}
+	//	// is this scp request?
+	//	if f == "scp" {
+	//		// for 'scp' requests, we'll launch ourselves with scp parameters:
+	//		teleportBin, err := osext.Executable()
+	//		if err != nil {
+	//			return nil, trace.Wrap(err)
+	//		}
+	//		e.Command = fmt.Sprintf("%s scp --remote-addr=%s --local-addr=%s %v",
+	//			teleportBin,
+	//			ctx.Conn.RemoteAddr().String(),
+	//			ctx.Conn.LocalAddr().String(),
+	//			strings.Join(args[1:], " "))
+	//	}
+	//}
+
 	//ctx.Exec = &ExecResponse{
 	//	Ctx:     ctx,
 	//	CmdName: e.Command,
@@ -310,10 +311,41 @@ func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
 	return c, nil
 }
 
+func (e *ExecResponse) updateSCP() error {
+	// split up command by space to grab the first word
+	args := strings.Split(e.CmdName, " ")
+
+	if len(args) > 0 {
+		_, f := filepath.Split(args[0])
+
+		// is this scp request?
+		if f == "scp" {
+			// for 'scp' requests, we'll launch ourselves with scp parameters:
+			teleportBin, err := osext.Executable()
+			if err != nil {
+				return trace.Wrap(err)
+			}
+			e.CmdName = fmt.Sprintf("%s scp --remote-addr=%s --local-addr=%s %v",
+				teleportBin,
+				e.Ctx.Conn.RemoteAddr().String(),
+				e.Ctx.Conn.LocalAddr().String(),
+				strings.Join(args[1:], " "))
+		}
+	}
+
+	return nil
+}
+
 // start launches the given command returns (nil, nil) if successful. execResult is only used
 // to communicate an error while launching
 func (e *ExecResponse) Start(ch ssh.Channel) (*ExecResult, error) {
 	var err error
+
+	err = e.updateSCP()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
 	e.Cmd, err = prepareCommand(e.Ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
