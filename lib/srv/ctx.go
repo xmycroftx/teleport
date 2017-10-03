@@ -253,6 +253,7 @@ func (c *ServerContext) GetEnv(key string) (string, bool) {
 }
 
 func NewServerContext(srv Server, conn *ssh.ServerConn) *ServerContext {
+	log.Errorf("NewServerContext: %v", conn.Permissions.Extensions[utils.CertTeleportClusterName])
 	ctx := &ServerContext{
 		env:              make(map[string]string),
 		Conn:             conn,

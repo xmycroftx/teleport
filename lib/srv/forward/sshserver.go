@@ -532,10 +532,12 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 
 func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
 	// check if the role allows agent forwarding
+	log.Errorf("ctx.TeleportUser: %v, ctx.ClusterName: %v", ctx.TeleportUser, ctx.ClusterName)
 	roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
 	if err != nil {
 		return trace.Wrap(err)
 	}
+	log.Errorf("roles: %v", roles)
 	if err := roles.CheckAgentForward(ctx.Login); err != nil {
 		log.Warningf("[SSH:node] denied forward agent %v", err)
 		return trace.Wrap(err)
@@ -892,6 +894,7 @@ func (s *Server) checkPermissionToLogin(cert *ssh.Certificate, teleportUser, osU
 // fetchRoleSet fretches role set for a given user
 func (s *Server) fetchRoleSet(teleportUser string, clusterName string) (services.RoleSet, error) {
 	localClusterName, err := s.client.GetDomainName()
+	log.Errorf("localClusterName: %v %v", localClusterName, err)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
