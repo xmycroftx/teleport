@@ -261,9 +261,19 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 	var serverconn net.Conn
 
 	// loop over all servers and try and connect to one of them
-	for _, s := range servers {
-		log.Errorf("tring to forward!!: %v", s)
-		forwardServer, err := forward.New(a.clt, nil, s)
+	if server == RemoteAuthServer {
+		for _, s := range servers {
+			conn, err = net.Dial("tcp", s)
+			if err == nil {
+				break
+			}
+
+			// log the reason we were not able to connect
+			log.Debugf(trace.DebugReport(err))
+		}
+	} else {
+		log.Errorf("tring to forward!!: %v", server)
+		forwardServer, err := forward.New(a.clt, nil, server)
 		if err != nil {
 			log.Errorf("unable to create forward server: %v", err)
 			return
@@ -271,16 +281,6 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 
 		serverconn, conn = net.Pipe()
 		go forwardServer.Dial(serverconn)
-
-		break
-
-		//conn, err = net.Dial("tcp", s)
-		//if err == nil {
-		//	break
-		//}
-
-		// log the reason we were not able to connect
-		//log.Debugf(trace.DebugReport(err))
 	}
 
 	// if we were not able to connect to any server, write the last connection

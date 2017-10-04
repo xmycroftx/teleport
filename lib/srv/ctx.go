@@ -76,6 +76,8 @@ type ServerContext struct {
 	// SSH connection
 	Conn *ssh.ServerConn
 
+	certificate string
+
 	sync.RWMutex
 
 	// term holds PTY if it was requested by the session
@@ -123,6 +125,15 @@ type ServerContext struct {
 	// clusterName is the name of the cluster current user
 	// is authenticated with
 	ClusterName string
+}
+
+func (c *ServerContext) GetCertificate() (*ssh.Certificate, error) {
+	k, _, _, _, err := ssh.ParseAuthorizedKey([]byte(c.certificate))
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return k.(*ssh.Certificate), nil
 }
 
 func (c *ServerContext) JoinOrCreateSession(reg *SessionRegistry) error {
@@ -263,6 +274,7 @@ func NewServerContext(srv Server, conn *ssh.ServerConn) *ServerContext {
 		srv:              srv,
 		TeleportUser:     conn.Permissions.Extensions[utils.CertTeleportUser],
 		ClusterName:      conn.Permissions.Extensions[utils.CertTeleportClusterName],
+		certificate:      conn.Permissions.Extensions["cert"],
 		Login:            conn.User(),
 		AgentReady:       make(chan bool),
 	}

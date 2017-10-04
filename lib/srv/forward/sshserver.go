@@ -330,6 +330,8 @@ func (s *Server) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permiss
 		return nil, trace.Wrap(err)
 	}
 	permissions.Extensions[utils.CertTeleportClusterName] = clusterName
+	permissions.Extensions["cert"] = string(ssh.MarshalAuthorizedKey(cert))
+
 	return permissions, nil
 }
 
@@ -532,12 +534,13 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 
 func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
 	// check if the role allows agent forwarding
-	log.Errorf("ctx.TeleportUser: %v, ctx.ClusterName: %v", ctx.TeleportUser, ctx.ClusterName)
-	roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
+	//roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
+	roles, err := s.fetchRoleSet(ctx)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 	log.Errorf("roles: %v", roles)
+
 	if err := roles.CheckAgentForward(ctx.Login); err != nil {
 		log.Warningf("[SSH:node] denied forward agent %v", err)
 		return trace.Wrap(err)
@@ -845,19 +848,19 @@ func (s *Server) checkPermissionToLogin(cert *ssh.Certificate, teleportUser, osU
 		return "", trace.Wrap(err)
 	}
 
-	// for local users, go and check their individual permissions
+	//// for local users, go and check their individual permissions
 	//var roles services.RoleSet
 	//if domainName == ca.GetClusterName() {
 	//	users, err := s.authService.GetUsers()
 	//	if err != nil {
-	//		return "", trace.Wrap(err)
+	//		return "", nil, trace.Wrap(err)
 	//	}
 	//	for _, u := range users {
 	//		if u.GetName() == teleportUser {
 	//			// pass along the traits so we get the substituted roles for this user
 	//			roles, err = services.FetchRoles(u.GetRoles(), s.authService, u.GetTraits())
 	//			if err != nil {
-	//				return "", trace.Wrap(err)
+	//				return "", nil, trace.Wrap(err)
 	//			}
 	//		}
 	//	}
@@ -865,12 +868,12 @@ func (s *Server) checkPermissionToLogin(cert *ssh.Certificate, teleportUser, osU
 	//	certRoles, err := s.extractRolesFromCert(cert)
 	//	if err != nil {
 	//		log.Errorf("failed to extract roles from cert: %v", err)
-	//		return "", trace.AccessDenied("failed to parse certificate roles")
+	//		return "", nil, trace.AccessDenied("failed to parse certificate roles")
 	//	}
 	//	roleNames, err := ca.CombinedMapping().Map(certRoles)
 	//	if err != nil {
 	//		log.Errorf("failed to map roles %v", err)
-	//		return "", trace.AccessDenied("failed to map roles")
+	//		return "", nil, trace.AccessDenied("failed to map roles")
 	//	}
 	//	// pass the principals on the certificate along as the login traits
 	//	// to the remote cluster.
@@ -879,7 +882,7 @@ func (s *Server) checkPermissionToLogin(cert *ssh.Certificate, teleportUser, osU
 	//	}
 	//	roles, err = services.FetchRoles(roleNames, s.authService, traits)
 	//	if err != nil {
-	//		return "", trace.Wrap(err)
+	//		return "", nil, trace.Wrap(err)
 	//	}
 	//}
 
@@ -892,49 +895,131 @@ func (s *Server) checkPermissionToLogin(cert *ssh.Certificate, teleportUser, osU
 }
 
 // fetchRoleSet fretches role set for a given user
-func (s *Server) fetchRoleSet(teleportUser string, clusterName string) (services.RoleSet, error) {
-	localClusterName, err := s.client.GetDomainName()
-	log.Errorf("localClusterName: %v %v", localClusterName, err)
+func (s *Server) fetchRoleSet(ctx *psrv.ServerContext) (services.RoleSet, error) {
+	teleportUser := ctx.TeleportUser
+	clusterName := ctx.ClusterName
+	cert, err := ctx.GetCertificate()
+	if err != nil {
+		return nil, err
+	}
+
+	//localClusterName, err := s.client.GetDomainName()
+	//log.Errorf("localClusterName: %v %v", localClusterName, err)
+	//if err != nil {
+	//	return nil, trace.Wrap(err)
+	//}
+
+	//cas, err := s.client.GetCertAuthorities(services.UserCA, false)
+	//if err != nil {
+	//	return nil, trace.Wrap(err)
+	//}
+
+	//var ca services.CertAuthority
+	//for i := range cas {
+	//	if cas[i].GetClusterName() == clusterName {
+	//		ca = cas[i]
+	//		break
+	//	}
+	//}
+	//if ca == nil {
+	//	return nil, trace.NotFound("could not find certificate authority for cluster %v and user %v", clusterName, teleportUser)
+	//}
+
+	cas, err := s.authService.GetCertAuthorities(services.UserCA, false)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
-	cas, err := s.client.GetCertAuthorities(services.UserCA, false)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
 	var ca services.CertAuthority
 	for i := range cas {
-		if cas[i].GetClusterName() == clusterName {
-			ca = cas[i]
-			break
+		checkers, err := cas[i].Checkers()
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		for _, checker := range checkers {
+			if sshutils.KeysEqual(cert.SignatureKey, checker) {
+				ca = cas[i]
+				break
+			}
 		}
 	}
+	// the certificate was signed by unknown authority
 	if ca == nil {
-		return nil, trace.NotFound("could not find certificate authority for cluster %v and user %v", clusterName, teleportUser)
+		return nil, trace.AccessDenied(
+			"the certificate for user '%v' is signed by untrusted CA",
+			teleportUser)
 	}
 
+	//var roles services.RoleSet
+	//if localClusterName == clusterName {
+	//	users, err := s.client.GetUsers()
+	//	if err != nil {
+	//		return nil, trace.Wrap(err)
+	//	}
+	//	for _, u := range users {
+	//		if u.GetName() == teleportUser {
+	//			roles, err = services.FetchRoles(u.GetRoles(), s.client, u.GetTraits())
+	//			if err != nil {
+	//				return nil, trace.Wrap(err)
+	//			}
+	//		}
+	//	}
+	//} else {
+	//roles, err = services.FetchRoles(ca.GetRoles(), s.client, nil)
+	//if err != nil {
+	//	return nil, trace.Wrap(err)
+	//}
+	//}
+
+	// for local users, go and check their individual permissions
 	var roles services.RoleSet
-	if localClusterName == clusterName {
-		users, err := s.client.GetUsers()
+	if clusterName == ca.GetClusterName() {
+		log.Errorf("here!")
+		users, err := s.authService.GetUsers()
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 		for _, u := range users {
 			if u.GetName() == teleportUser {
-				roles, err = services.FetchRoles(u.GetRoles(), s.client, u.GetTraits())
+				// pass along the traits so we get the substituted roles for this user
+				roles, err = services.FetchRoles(u.GetRoles(), s.authService, u.GetTraits())
 				if err != nil {
 					return nil, trace.Wrap(err)
 				}
 			}
 		}
 	} else {
-		roles, err = services.FetchRoles(ca.GetRoles(), s.client, nil)
+		certRoles, err := s.extractRolesFromCert(cert)
+		if err != nil {
+			log.Errorf("failed to extract roles from cert: %v", err)
+			return nil, trace.AccessDenied("failed to parse certificate roles")
+		}
+		roleNames, err := ca.CombinedMapping().Map(certRoles)
+		if err != nil {
+			log.Errorf("failed to map roles %v", err)
+			return nil, trace.AccessDenied("failed to map roles")
+		}
+		// pass the principals on the certificate along as the login traits
+		// to the remote cluster.
+		traits := map[string][]string{
+			teleport.TraitLogins: cert.ValidPrincipals,
+		}
+		log.Errorf("role names: %v", roleNames)
+		log.Errorf("traits: %v", traits)
+		roles, err = services.FetchRoles(roleNames, s.authService, traits)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 	}
 
 	return roles, err
+}
+
+// extractRolesFromCert extracts roles from certificate metadata extensions
+func (s *Server) extractRolesFromCert(cert *ssh.Certificate) ([]string, error) {
+	data, ok := cert.Extensions[teleport.CertExtensionTeleportRoles]
+	if !ok {
+		// it's ok to not have any roles in the metadata
+		return nil, nil
+	}
+	return services.UnmarshalCertRoles(data)
 }

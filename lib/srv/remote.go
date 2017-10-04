@@ -97,6 +97,9 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 		case <-ctx.AgentReady:
 		}
 	}
+	if ctx.agent == nil {
+		return nil, trace.AccessDenied("no agent available")
+	}
 	log.Debugf("[Remote Session] Agent ready")
 	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
 
@@ -161,9 +164,10 @@ func prepareSession(session *ssh.Session, ctx *ServerContext) error {
 	if err := session.Setenv(teleport.SSHTeleportClusterName, ctx.ClusterName); err != nil {
 		return trace.BadParameter("unable to set environment variable: %v: %v", teleport.SSHTeleportClusterName, err)
 	}
-	if err := session.Setenv(teleport.SSHSessionID, string(ctx.session.id)); err != nil {
-		return trace.BadParameter("unable to set environment variable: %v: %v", teleport.SSHSessionID, err)
-	}
+	// TODO(russjones): fix this, it will panic when trying to connect to a node in a trusted cluster
+	//if err := session.Setenv(teleport.SSHSessionID, string(ctx.session.id)); err != nil {
+	//	return trace.BadParameter("unable to set environment variable: %v: %v", teleport.SSHSessionID, err)
+	//}
 
 	return nil
 }
