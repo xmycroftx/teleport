@@ -500,9 +500,11 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 		// exec is a remote execution of a program, does not use PTY
 		return s.handleExec(ch, req, ctx)
 	case sshutils.PTYReq:
+		log.Errorf("pty-req")
 		// SSH client asked to allocate PTY
 		return s.handlePTYReq(ch, req, ctx)
 	case "shell":
+		log.Errorf("shell")
 		// SSH client asked to launch shell, we allocate PTY and start shell session
 		ctx.Exec = &psrv.ExecResponse{Ctx: ctx}
 		if err := s.reg.OpenSession(ch, req, ctx); err != nil {
@@ -519,6 +521,7 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCont
 	case sshutils.WindowChangeReq:
 		return s.handleWinChange(ch, req, ctx)
 	case sshutils.AgentReq:
+		log.Errorf("auth-agent-req@openssh.com")
 		// This happens when SSH client has agent forwarding enabled, in this case
 		// client sends a special request, in return SSH server opens new channel
 		// that uses SSH protocol for agent drafted here:
@@ -539,21 +542,33 @@ func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	log.Errorf("roles: %v", roles)
+	log.Errorf("handleAgentForward: roles: %v", roles)
 
 	if err := roles.CheckAgentForward(ctx.Login); err != nil {
 		log.Warningf("[SSH:node] denied forward agent %v", err)
 		return trace.Wrap(err)
 	}
 
-	authChannel, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
-	if err != nil {
-		return err
-	}
-	log.Debugf("[SSH:forward] Overwriting agent with agent passed in by client")
-	ctx.SetAgent(agent.NewClient(authChannel), authChannel)
+	//authChannel, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
+	//if err != nil {
+	//	return err
+	//}
 
-	close(ctx.AgentReady)
+	// this is the real one to uncomment
+	//err = agent.RequestAgentForwarding(ctx.RemoteSession)
+	//if err != nil {
+	//	return err
+	//}
+
+	//err = agent.ForwardToAgent(client, ctx.agent)
+	//if err != nil {
+	//	return nil, err
+	//}
+
+	//log.Debugf("[SSH:forward] Overwriting agent with agent passed in by client")
+	//ctx.SetAgent(agent.NewClient(authChannel), authChannel)
+
+	//close(ctx.AgentReady)
 
 	return nil
 }
@@ -662,7 +677,7 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.Server
 	// get an existing terminal or create a new one
 	term := ctx.GetTerm()
 	if term == nil {
-		term, err = psrv.NewRemoteTerminal(ctx)
+		term, ctx.RemoteSession, err = psrv.NewRemoteTerminal(ctx)
 		if err != nil {
 			return trace.Wrap(err)
 		}

@@ -91,7 +91,9 @@ type ServerContext struct {
 	// agentCh is SSH channel using SSH agent protocol
 	agentCh ssh.Channel
 
-	AgentReady chan bool
+	RemoteSession *ssh.Session
+
+	//AgentReady chan bool
 
 	// result channel will be used by remote executions
 	// that are processed in separate process, once the result is collected
@@ -276,7 +278,7 @@ func NewServerContext(srv Server, conn *ssh.ServerConn) *ServerContext {
 		ClusterName:      conn.Permissions.Extensions[utils.CertTeleportClusterName],
 		certificate:      conn.Permissions.Extensions["cert"],
 		Login:            conn.User(),
-		AgentReady:       make(chan bool),
+		//AgentReady:       make(chan bool),
 	}
 	ctx.Entry = log.WithFields(srv.LogFields(log.Fields{
 		"local":        conn.LocalAddr(),

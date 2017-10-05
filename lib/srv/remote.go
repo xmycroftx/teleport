@@ -4,7 +4,7 @@ import (
 	//"crypto/subtle"
 	"net"
 	"os"
-	"time"
+	//"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -89,18 +89,18 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	//}
 
 	// TODO(russjones): Wait for the agent to be ready or a timeout.
-	log.Debugf("[Remote Session] Waiting for agent")
-	if !ctx.AgentProxyCommand {
-		select {
-		case <-time.After(10 * time.Second):
-			return nil, trace.AccessDenied("timeout waiting for agent")
-		case <-ctx.AgentReady:
-		}
-	}
+	///log.Debugf("[Remote Session] Waiting for agent")
+	///if !ctx.AgentProxyCommand {
+	///	select {
+	///	case <-time.After(10 * time.Second):
+	///		return nil, trace.AccessDenied("timeout waiting for agent")
+	///	case <-ctx.AgentReady:
+	///	}
+	///}
 	if ctx.agent == nil {
-		return nil, trace.AccessDenied("no agent available")
+		return nil, trace.AccessDenied("no agent available, maybe you forgot to set -o 'ForwardAgent yes' in ProxyCommand?")
 	}
-	log.Debugf("[Remote Session] Agent ready")
+	//log.Debugf("[Remote Session] Agent ready")
 	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
 
 	clientConfig := &ssh.ClientConfig{
@@ -121,6 +121,16 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+
+	//err = agent.RequestAgentForwarding(session)
+	//if err != nil {
+	//	return nil, err
+	//}
+
+	//err = agent.ForwardToAgent(client, ctx.agent)
+	//if err != nil {
+	//	return nil, err
+	//}
 
 	err = prepareSession(session, ctx)
 	if err != nil {
@@ -152,6 +162,7 @@ func CollectRemoteStatus(err error) (*ExecResult, error) {
 }
 
 func prepareSession(session *ssh.Session, ctx *ServerContext) error {
+
 	if err := session.Setenv(teleport.SSHTeleportUser, ctx.TeleportUser); err != nil {
 		return trace.BadParameter("unable to set environment variable: %v: %v", teleport.SSHTeleportUser, err)
 	}
