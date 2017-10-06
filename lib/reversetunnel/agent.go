@@ -31,7 +31,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
-	//"github.com/gravitational/teleport/lib/srv/forward"
+	"github.com/gravitational/teleport/lib/srv/forward"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/teleport/lib/utils/proxy"
@@ -272,15 +272,15 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 			log.Debugf(trace.DebugReport(err))
 		}
 	} else {
-		//hostCertificate, err := s.hostCertificateCache.get(to.String())
-		//if err != nil {
-		//	return nil, trace.Wrap(err)
-		//}
+		hostCertificate, err := getCertificate(to.String(), s.client)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
 
-		//remoteServer, err := forward.New(s.clt, s.agent, from.String(), hostCertificate)
-		//if err != nil {
-		//	return nil, trace.Wrap(err)
-		//}
+		remoteServer, err := forward.New(s.clt, s.agent, from.String(), hostCertificate)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
 
 		//conn, err := remoteServer.Dial(to.String())
 		//if err != nil {

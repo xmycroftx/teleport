@@ -51,7 +51,6 @@ func newlocalSite(srv *server, domainName string, client auth.ClientI) (*localSi
 				"type":       "localSite",
 			},
 		}),
-		hostCertificateCache: NewHostCertificateCache(client),
 	}, nil
 }
 
@@ -74,8 +73,15 @@ type localSite struct {
 
 	agent     agent.Agent
 	agentChan ssh.Channel
-	//agentReady chan bool
-	hostCertificateCache *hostCertificateCache
+}
+
+func (s *localSite) SetAgent(a agent.Agent, ch ssh.Channel) {
+	recordingProxy := true
+
+	if recordingProxy {
+		s.agent = a
+		s.agentChan = ch
+	}
 }
 
 func (s *localSite) CachingAccessPoint() (auth.AccessPoint, error) {
@@ -102,12 +108,6 @@ func (s *localSite) GetLastConnected() time.Time {
 	return time.Now()
 }
 
-func (s *localSite) SetAgent(a agent.Agent, ch ssh.Channel) {
-	log.Errorf("SetAgent called!: %v %v", a, ch)
-	s.agent = a
-	s.agentChan = ch
-}
-
 // Dial dials a given host in this site (cluster).
 func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
 	s.Lock()
@@ -121,7 +121,7 @@ func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
 	// server that can forward requests to a remote ssh server (can be teleport
 	// or openssh)
 	if recordingProxy {
-		hostCertificate, err := s.hostCertificateCache.get(to.String())
+		hostCertificate, err := getCertificate(to.String(), s.client)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}

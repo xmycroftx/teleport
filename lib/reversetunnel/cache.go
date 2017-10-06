@@ -29,23 +29,18 @@ import (
 	"github.com/gravitational/trace"
 )
 
-type hostCertificateCache struct {
-	mu sync.Mutex
+// certificateCache holds host certificates used by the recording proxy. It's
+// created at the package level because both local site and remote site use it.
+var certificateCache map[string]ssh.Signer = make(map[string]ssh.Signer)
 
-	authService auth.ClientI
-	cache       map[string]ssh.Signer
-}
+// cacheMutex is for go routine safety.
+var cacheMutex sync.Mutex
 
-func NewHostCertificateCache(authService auth.ClientI) *hostCertificateCache {
-	return &hostCertificateCache{
-		authService: authService,
-		cache:       make(map[string]ssh.Signer),
-	}
-}
-
-func (h *hostCertificateCache) get(addr string) (ssh.Signer, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+// getCertificate will fetch a certificate from the cache. If the certificate
+// is not in the cache, it will be generated, put in the cache, and returned.
+func getCertificate(addr string, authService auth.ClientI) (ssh.Signer, error) {
+	cacheMutex.Lock()
+	defer cacheMutex.Unlock()
 
 	var certificate ssh.Signer
 	var err error
@@ -57,20 +52,20 @@ func (h *hostCertificateCache) get(addr string) (ssh.Signer, error) {
 		return nil, trace.Wrap(err)
 	}
 
-	certificate, ok = h.cache[principal]
+	certificate, ok = certificateCache[principal]
 	if !ok {
-		certificate, err = h.generateHostCert(principal)
+		certificate, err = generateHostCert(principal, authService)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 
-		h.cache[principal] = certificate
+		certificateCache[principal] = certificate
 	}
 
 	return certificate, nil
 }
 
-func (h *hostCertificateCache) generateHostCert(principal string) (ssh.Signer, error) {
+func generateHostCert(principal string) (ssh.Signer, error) {
 	keygen := native.New()
 	defer keygen.Close()
 
@@ -79,12 +74,12 @@ func (h *hostCertificateCache) generateHostCert(principal string) (ssh.Signer, e
 		return nil, trace.Wrap(err)
 	}
 
-	clusterName, err := h.authService.GetDomainName()
+	clusterName, err := authService.GetDomainName()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	certBytes, err := h.authService.GenerateHostCert(pubBytes, principal, principal, clusterName, teleport.Roles{teleport.RoleNode}, 0)
+	certBytes, err := authService.GenerateHostCert(pubBytes, principal, principal, clusterName, teleport.Roles{teleport.RoleNode}, 0)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

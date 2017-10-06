@@ -54,10 +54,18 @@ type remoteSite struct {
 	transport   *http.Transport
 	clt         *auth.Client
 	accessPoint auth.AccessPoint
+
+	agent     agent.Agent
+	agentChan ssh.Channel
 }
 
 func (s *remoteSite) SetAgent(a agent.Agent, ch ssh.Channel) {
-	return
+	recordingProxy := true
+
+	if recordingProxy {
+		s.agent = a
+		s.agentChan = ch
+	}
 }
 
 func (s *remoteSite) CachingAccessPoint() (auth.AccessPoint, error) {
