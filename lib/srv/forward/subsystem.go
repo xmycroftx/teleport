@@ -12,17 +12,17 @@ import (
 
 type remoteSubsystem struct {
 	ctx          *srv.ServerContext
-	session      *ssh.Session
 	subsytemName string
 	doneCtx      context.Context
 }
 
 func (r *remoteSubsystem) Start(ch ssh.Channel) error {
-	session, err := srv.RemoteSession(r.ctx)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	r.session = session
+	//session, err := srv.RemoteSession(r.ctx)
+	//if err != nil {
+	//	return trace.Wrap(err)
+	//}
+	//r.session = session
+	session := r.ctx.RemoteSession
 
 	// combine stdout and stderr
 	stdout, err := session.StdoutPipe()

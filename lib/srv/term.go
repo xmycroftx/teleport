@@ -277,19 +277,14 @@ func getHostCA(authService auth.AccessPoint, clusterName string) (services.CertA
 	return nil, trace.NotFound("unable to find host ca for %v", clusterName)
 }
 
-func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, *ssh.Session, error) {
-	session, err := RemoteSession(ctx)
-	if err != nil {
-		return nil, nil, trace.Wrap(err)
-	}
-
+func NewRemoteTerminal(ctx *ServerContext) (*remoteTerminal, error) {
 	t := &remoteTerminal{
 		ctx:       ctx,
-		session:   session,
+		session:   ctx.RemoteSession,
 		ptyBuffer: &ptyBuffer{},
 	}
 
-	return t, session, nil
+	return t, nil
 }
 
 func (t *remoteTerminal) AddParty(delta int) {

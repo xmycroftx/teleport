@@ -15,7 +15,6 @@ import (
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
-	"github.com/gravitational/teleport/lib/auth/native"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
@@ -33,26 +32,33 @@ type Server struct {
 	remoteHostSigner ssh.Signer
 	remoteHostPort   string
 
-	addr string
+	srcAddr string
+	dstAddr string
 
 	agent     agent.Agent
 	agentChan ssh.Channel
 
-	client        auth.ClientI
+	remoteClient  *ssh.Client
+	remoteSession *ssh.Session
+
+	hostCertificate ssh.Signer
+
+	authClient    auth.ClientI
 	alog          events.IAuditLog
 	authService   auth.AccessPoint
 	reg           *psrv.SessionRegistry
 	sessionServer rsession.Service
 }
 
-func New(authClient auth.ClientI, a agent.Agent, addr string) (*Server, error) {
+func New(authClient auth.ClientI, a agent.Agent, addr string, hostCertificate ssh.Signer) (*Server, error) {
 	s := &Server{
-		addr:          addr,
-		agent:         a,
-		client:        authClient,
-		alog:          authClient,
-		authService:   authClient,
-		sessionServer: authClient,
+		srcAddr:         addr,
+		agent:           a,
+		hostCertificate: hostCertificate,
+		authClient:      authClient,
+		alog:            authClient,
+		authService:     authClient,
+		sessionServer:   authClient,
 	}
 	s.reg = psrv.NewSessionRegistry(s)
 	return s, nil
@@ -67,7 +73,7 @@ func (s *Server) GetNamespace() string {
 }
 
 func (s *Server) AdvertiseAddr() string {
-	return s.addr
+	return s.dstAddr
 }
 
 func (s *Server) LogFields(fields map[string]interface{}) log.Fields {
@@ -107,48 +113,6 @@ func (s *Server) GetSessionServer() rsession.Service {
 	return s.sessionServer
 }
 
-func generateHostCert(authService auth.ClientI, principal string) (ssh.Signer, error) {
-	keygen := native.New()
-	defer keygen.Close()
-
-	privBytes, pubBytes, err := keygen.GenerateKeyPair("")
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	clusterName, err := authService.GetDomainName()
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	certBytes, err := authService.GenerateHostCert(pubBytes, principal, principal, clusterName, teleport.Roles{teleport.RoleNode}, 0)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	privateKey, err := ssh.ParsePrivateKey(privBytes)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	publicKey, _, _, _, err := ssh.ParseAuthorizedKey(certBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	cert, ok := publicKey.(*ssh.Certificate)
-	if !ok {
-		return nil, fmt.Errorf("not cert")
-	}
-
-	s, err := ssh.NewCertSigner(cert, privateKey)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	return s, nil
-}
-
 func getUserCA(authService auth.ClientI) ([][]byte, error) {
 	clusterName, err := authService.GetDomainName()
 	if err != nil {
@@ -167,48 +131,65 @@ func getUserCA(authService auth.ClientI) ([][]byte, error) {
 	return ca.GetCheckingKeys(), nil
 }
 
-func (s *Server) Dial(conn net.Conn) error {
-	var err error
-
-	host, _, err := net.SplitHostPort(s.AdvertiseAddr())
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	hostKey, err := generateHostCert(s.client, host)
-	if err != nil {
-		return trace.Wrap(err)
-	}
+//func (s *Server) Dial(conn net.Conn) error {
+func (s *Server) Dial(address string) (net.Conn, error) {
+	s.dstAddr = address
 
 	config := &ssh.ServerConfig{
 		PublicKeyCallback: s.keyAuth,
 	}
-	config.AddHostKey(hostKey)
+	config.AddHostKey(s.hostCertificate)
 
-	sconn, chans, reqs, err := ssh.NewServerConn(conn, config)
-	if err != nil {
-		return err
+	server, client := net.Pipe()
+
+	go func() {
+		var err error
+
+		sconn, chans, reqs, err := ssh.NewServerConn(server, config)
+		if err != nil {
+			client.Close()
+			server.Close()
+			log.Errorf("[FORWARD] Unable establish new server connection: %v", err)
+			return
+		}
+
+		// get a session to the remote node this connection will be forwarded to
+		s.remoteClient, s.remoteSession, err = psrv.RemoteSession(s.dstAddr, sconn.User(), s.agent, s.authClient)
+		if err != nil {
+			log.Errorf("[FORWARD] Unable to build connection to remote host: %v", err)
+			rejectChannel(chans, err)
+			sconn.Close()
+			//client.Close()
+			//server.Close()
+			return
+		}
+
+		// global requests
+		go func() {
+			for newRequest := range reqs {
+				go s.handleGlobalRequest(newRequest)
+			}
+		}()
+
+		// go handle global channel requests
+		go func() {
+			for newChannel := range chans {
+				go s.handleChannel(sconn, newChannel)
+			}
+		}()
+	}()
+
+	return client, nil
+}
+
+func rejectChannel(chans <-chan ssh.NewChannel, err error) {
+	for newChannel := range chans {
+		err := newChannel.Reject(ssh.ConnectionFailed, err.Error())
+		if err != nil {
+			log.Errorf("[FORWARD] Unable to reject and close connection.")
+		}
+		return
 	}
-
-	//sconn.Permissions = &ssh.Permissions{
-	//	Extensions: map[string]string{utils.CertTeleportUser: "rjones"},
-	//}
-
-	// global requests
-	go func() {
-		for newRequest := range reqs {
-			go s.handleGlobalRequest(newRequest)
-		}
-	}()
-
-	// go handle global channel requests
-	go func() {
-		for newChannel := range chans {
-			go s.handleChannel(conn, sconn, newChannel)
-		}
-	}()
-
-	return nil
 }
 
 // keyAuth implements SSH client authentication using public keys and is called
@@ -335,16 +316,21 @@ func (s *Server) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permiss
 	return permissions, nil
 }
 
-func (s *Server) handleGlobalRequest(r *ssh.Request) {
-	switch r.Type {
-	case teleport.KeepAliveReqType:
-		s.handleKeepAlive(r)
-	default:
-		log.Debugf("[SSH] Discarding %q global request: %+v", r.Type, r)
+func (s *Server) handleGlobalRequest(req *ssh.Request) {
+	log.Debugf("[GLOBAL REQUEST] Forwarding %v request", req.Type)
+
+	ok, err := s.remoteSession.SendRequest(req.Type, req.WantReply, req.Payload)
+	if err != nil {
+		log.Warnf("[GLOBAL REQUEST] Failed to forward %v request: %v", req.Type, err)
+		return
+	}
+	if req.WantReply {
+		req.Reply(ok, nil)
 	}
 }
 
-func (s *Server) handleChannel(nc net.Conn, sconn *ssh.ServerConn, nch ssh.NewChannel) {
+//func (s *Server) handleChannel(nc net.Conn, sconn *ssh.ServerConn, nch ssh.NewChannel) {
+func (s *Server) handleChannel(sconn *ssh.ServerConn, nch ssh.NewChannel) {
 	channelType := nch.ChannelType()
 
 	switch channelType {
@@ -379,6 +365,7 @@ func (s *Server) handleChannel(nc net.Conn, sconn *ssh.ServerConn, nch ssh.NewCh
 func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel, req *sshutils.DirectTCPIPReq) {
 	// ctx holds the connection context and keeps track of the associated resources
 	ctx := psrv.NewServerContext(s, sconn)
+	ctx.RemoteSession = s.remoteSession
 	ctx.SetAgent(s.agent, s.agentChan)
 	//ctx.IsTestStub = s.isTestStub
 	ctx.AddCloser(ch)
@@ -435,6 +422,8 @@ func (s *Server) handleTerminalResize(sconn *ssh.ServerConn, ch ssh.Channel) {
 func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in <-chan *ssh.Request) {
 	// ctx holds the connection context and keeps track of the associated resources
 	ctx := psrv.NewServerContext(s, sconn)
+	ctx.RemoteSession = s.remoteSession
+	log.Errorf("ctx.RemoteSession: %v", ctx.RemoteSession)
 	// if the proxycommand is where we are forwarding the agent, then we need to
 	// keep that in mind (we don't need to wait for the agent to be ready, it's
 	// already ready)
@@ -555,15 +544,15 @@ func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *psrv.
 	//}
 
 	// this is the real one to uncomment
-	//err = agent.RequestAgentForwarding(ctx.RemoteSession)
-	//if err != nil {
-	//	return err
-	//}
+	err = agent.RequestAgentForwarding(s.remoteSession)
+	if err != nil {
+		return trace.Wrap(err)
+	}
 
-	//err = agent.ForwardToAgent(client, ctx.agent)
-	//if err != nil {
-	//	return nil, err
-	//}
+	err = agent.ForwardToAgent(s.remoteClient, ctx.GetAgent())
+	if err != nil {
+		return trace.Wrap(err)
+	}
 
 	//log.Debugf("[SSH:forward] Overwriting agent with agent passed in by client")
 	//ctx.SetAgent(agent.NewClient(authChannel), authChannel)
@@ -677,7 +666,7 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.Server
 	// get an existing terminal or create a new one
 	term := ctx.GetTerm()
 	if term == nil {
-		term, ctx.RemoteSession, err = psrv.NewRemoteTerminal(ctx)
+		term, err = psrv.NewRemoteTerminal(ctx)
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -738,22 +727,6 @@ func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerCo
 		}
 	}()
 	return nil
-}
-
-// handleKeepAlive accepts and replies to keepalive@openssh.com requests.
-func (s *Server) handleKeepAlive(req *ssh.Request) {
-	log.Debugf("[KEEP ALIVE] Received %q: WantReply: %v", req.Type, req.WantReply)
-
-	// only reply if the sender actually wants a response
-	if req.WantReply {
-		err := req.Reply(true, nil)
-		if err != nil {
-			log.Warnf("[KEEP ALIVE] Unable to reply to %q request: %v", req.Type, err)
-			return
-		}
-	}
-
-	log.Debugf("[KEEP ALIVE] Replied to %q", req.Type)
 }
 
 func replyError(ch ssh.Channel, req *ssh.Request, err error) {

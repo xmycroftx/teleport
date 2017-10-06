@@ -10,22 +10,23 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/gravitational/teleport"
+	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/trace"
-	log "github.com/sirupsen/logrus"
+	//log "github.com/sirupsen/logrus"
 )
 
 var _ = os.SEEK_CUR
 var _ = agent.ForwardToRemote
 
-func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
+func RemoteSession(addr string, systemLogin string, userAuthAgent agent.Agent, authService auth.ClientI) (*ssh.Client, *ssh.Session, error) {
 	hostKeyChecker := func(hostport string, remote net.Addr, key ssh.PublicKey) error {
 		cert, ok := key.(*ssh.Certificate)
 		if ok {
 			// find cert authority by it's key
-			cas, err := ctx.srv.GetAuthService().GetCertAuthorities(services.HostCA, false)
+			cas, err := authService.GetCertAuthorities(services.HostCA, false)
 			if err != nil {
 				return trace.Wrap(err)
 			}
@@ -88,23 +89,13 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 	//	},
 	//}
 
-	// TODO(russjones): Wait for the agent to be ready or a timeout.
-	///log.Debugf("[Remote Session] Waiting for agent")
-	///if !ctx.AgentProxyCommand {
-	///	select {
-	///	case <-time.After(10 * time.Second):
-	///		return nil, trace.AccessDenied("timeout waiting for agent")
-	///	case <-ctx.AgentReady:
-	///	}
-	///}
-	if ctx.agent == nil {
-		return nil, trace.AccessDenied("no agent available, maybe you forgot to set -o 'ForwardAgent yes' in ProxyCommand?")
+	if userAuthAgent == nil {
+		return nil, nil, trace.AccessDenied("no agent found in ProxyCommand")
 	}
-	//log.Debugf("[Remote Session] Agent ready")
-	authMethod := ssh.PublicKeysCallback(ctx.agent.Signers)
+	authMethod := ssh.PublicKeysCallback(userAuthAgent.Signers)
 
 	clientConfig := &ssh.ClientConfig{
-		User: ctx.Login,
+		User: systemLogin,
 		Auth: []ssh.AuthMethod{
 			authMethod,
 		},
@@ -112,32 +103,22 @@ func RemoteSession(ctx *ServerContext) (*ssh.Session, error) {
 		Timeout:         defaults.DefaultDialTimeout,
 	}
 
-	client, err := ssh.Dial("tcp", ctx.srv.AdvertiseAddr(), clientConfig)
+	client, err := ssh.Dial("tcp", addr, clientConfig)
 	if err != nil {
-		return nil, trace.Wrap(err)
+		return nil, nil, trace.Wrap(err)
 	}
 
 	session, err := client.NewSession()
 	if err != nil {
-		return nil, trace.Wrap(err)
+		return nil, nil, trace.Wrap(err)
 	}
 
-	//err = agent.RequestAgentForwarding(session)
+	//err = prepareSession(session, ctx)
 	//if err != nil {
-	//	return nil, err
+	//	log.Warnf("[Remote Session] Unable to set environment variables on target host: %v", err)
 	//}
 
-	//err = agent.ForwardToAgent(client, ctx.agent)
-	//if err != nil {
-	//	return nil, err
-	//}
-
-	err = prepareSession(session, ctx)
-	if err != nil {
-		log.Warnf("[Remote Session] Unable to set environment variables, this will prevent session sharing: %v", err)
-	}
-
-	return session, nil
+	return client, session, nil
 }
 
 func CollectRemoteStatus(err error) (*ExecResult, error) {
@@ -162,7 +143,6 @@ func CollectRemoteStatus(err error) (*ExecResult, error) {
 }
 
 func prepareSession(session *ssh.Session, ctx *ServerContext) error {
-
 	if err := session.Setenv(teleport.SSHTeleportUser, ctx.TeleportUser); err != nil {
 		return trace.BadParameter("unable to set environment variable: %v: %v", teleport.SSHTeleportUser, err)
 	}

@@ -31,7 +31,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
-	"github.com/gravitational/teleport/lib/srv/forward"
+	//"github.com/gravitational/teleport/lib/srv/forward"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/teleport/lib/utils/proxy"
@@ -258,7 +258,7 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 
 	var conn net.Conn
 	var err error
-	var serverconn net.Conn
+	//var serverconn net.Conn
 
 	// loop over all servers and try and connect to one of them
 	if server == RemoteAuthServer {
@@ -272,15 +272,32 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 			log.Debugf(trace.DebugReport(err))
 		}
 	} else {
-		log.Errorf("tring to forward!!: %v", server)
-		forwardServer, err := forward.New(a.clt, nil, server)
-		if err != nil {
-			log.Errorf("unable to create forward server: %v", err)
-			return
-		}
+		//hostCertificate, err := s.hostCertificateCache.get(to.String())
+		//if err != nil {
+		//	return nil, trace.Wrap(err)
+		//}
 
-		serverconn, conn = net.Pipe()
-		go forwardServer.Dial(serverconn)
+		//remoteServer, err := forward.New(s.clt, s.agent, from.String(), hostCertificate)
+		//if err != nil {
+		//	return nil, trace.Wrap(err)
+		//}
+
+		//conn, err := remoteServer.Dial(to.String())
+		//if err != nil {
+		//	return nil, trace.Wrap(err)
+		//}
+
+		//return conn, nil
+
+		//log.Errorf("tring to forward!!: %v", server)
+		//forwardServer, err := forward.New(a.clt, nil, server)
+		//if err != nil {
+		//	log.Errorf("unable to create forward server: %v", err)
+		//	return
+		//}
+
+		//serverconn, conn = net.Pipe()
+		//go forwardServer.Dial(serverconn)
 	}
 
 	// if we were not able to connect to any server, write the last connection

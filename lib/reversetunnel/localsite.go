@@ -51,7 +51,7 @@ func newlocalSite(srv *server, domainName string, client auth.ClientI) (*localSi
 				"type":       "localSite",
 			},
 		}),
-		forwardServerCache: make(map[string]*forward.Server),
+		hostCertificateCache: NewHostCertificateCache(client),
 	}, nil
 }
 
@@ -75,7 +75,7 @@ type localSite struct {
 	agent     agent.Agent
 	agentChan ssh.Channel
 	//agentReady chan bool
-	forwardServerCache map[string]*forward.Server
+	hostCertificateCache *hostCertificateCache
 }
 
 func (s *localSite) CachingAccessPoint() (auth.AccessPoint, error) {
@@ -113,19 +113,33 @@ func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
 	s.Lock()
 	defer s.Unlock()
 
-	var err error
 	s.log.Debugf("[PROXY] localSite.Dial(from=%v, to=%v)", from, to)
 
-	forwardServer, err := forward.New(s.client, s.agent, to.String())
-	if err != nil {
-		return nil, err
+	recordingProxy := true
+
+	// if we are in recording proxy mode, return a connection to a in-memory
+	// server that can forward requests to a remote ssh server (can be teleport
+	// or openssh)
+	if recordingProxy {
+		hostCertificate, err := s.hostCertificateCache.get(to.String())
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		remoteServer, err := forward.New(s.client, s.agent, from.String(), hostCertificate)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		conn, err := remoteServer.Dial(to.String())
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		return conn, nil
 	}
 
-	server, client := net.Pipe()
-	go forwardServer.Dial(server)
-
-	return client, nil
-	//return net.Dial(to.Network(), to.String())
+	return net.Dial(to.Network(), to.String())
 }
 
 func findServer(addr string, servers []services.Server) (services.Server, error) {

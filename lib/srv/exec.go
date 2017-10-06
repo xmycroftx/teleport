@@ -120,6 +120,7 @@ func ParseExecRequest(req *ssh.Request, ctx *ServerContext) (Exec, error) {
 	//}
 	ctx.Exec = &remoteExec{
 		ctx:     ctx,
+		session: ctx.RemoteSession,
 		cmdName: e.Command,
 	}
 	return ctx.Exec, nil
@@ -424,16 +425,10 @@ func (e *remoteExec) SetCmd(cmd string) {
 }
 
 func (r *remoteExec) Start(ch ssh.Channel) (*ExecResult, error) {
-	session, err := RemoteSession(r.ctx)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	r.session = session
+	r.session.Stdout = ch
+	r.session.Stderr = ch.Stderr()
 
-	session.Stdout = ch
-	session.Stderr = ch.Stderr()
-
-	inputWriter, err := session.StdinPipe()
+	inputWriter, err := r.session.StdinPipe()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -442,7 +437,7 @@ func (r *remoteExec) Start(ch ssh.Channel) (*ExecResult, error) {
 		inputWriter.Close()
 	}()
 
-	err = session.Start(r.cmdName)
+	err = r.session.Start(r.cmdName)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
