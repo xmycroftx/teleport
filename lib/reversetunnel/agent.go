@@ -27,6 +27,9 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/defaults"
@@ -38,7 +41,6 @@ import (
 
 	"github.com/gravitational/trace"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
 )
 
 // Agent is a reverse tunnel agent running as a part of teleport Proxies
@@ -56,6 +58,9 @@ type Agent struct {
 	hostKeyCallback utils.HostKeyCallback
 	authMethods     []ssh.AuthMethod
 	accessPoint     auth.AccessPoint
+
+	agent     agent.Agent
+	agentChan ssh.Channel
 }
 
 // AgentOption specifies parameter that could be passed to Agents
@@ -258,7 +263,6 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 
 	var conn net.Conn
 	var err error
-	//var serverconn net.Conn
 
 	// loop over all servers and try and connect to one of them
 	if server == RemoteAuthServer {
@@ -272,32 +276,20 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 			log.Debugf(trace.DebugReport(err))
 		}
 	} else {
-		hostCertificate, err := getCertificate(to.String(), s.client)
+		log.Errorf("tryingt o dial!")
+		hostCertificate, err := getCertificate(server, a.clt)
 		if err != nil {
-			return nil, trace.Wrap(err)
+			// TODO(russjones): Handle this better.
+			log.Errorf("unable to get cert from cache")
 		}
 
-		remoteServer, err := forward.New(s.clt, s.agent, from.String(), hostCertificate)
+		remoteServer, err := forward.New(a.clt, a.agent, server, hostCertificate)
 		if err != nil {
-			return nil, trace.Wrap(err)
+			// TODO(russjones): Handle this better.
+			log.Errorf("unable to create new forward server")
 		}
 
-		//conn, err := remoteServer.Dial(to.String())
-		//if err != nil {
-		//	return nil, trace.Wrap(err)
-		//}
-
-		//return conn, nil
-
-		//log.Errorf("tring to forward!!: %v", server)
-		//forwardServer, err := forward.New(a.clt, nil, server)
-		//if err != nil {
-		//	log.Errorf("unable to create forward server: %v", err)
-		//	return
-		//}
-
-		//serverconn, conn = net.Pipe()
-		//go forwardServer.Dial(serverconn)
+		conn, err = remoteServer.Dial(server)
 	}
 
 	// if we were not able to connect to any server, write the last connection
@@ -333,6 +325,22 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 	wg.Wait()
 }
 
+func (a *Agent) proxyAgentForward(ch ssh.Channel, reqC <-chan *ssh.Request) {
+	log.Debugf("[HA Agent] proxyAgentForward")
+	// TODO(russjones): We need to close this.
+	//defer ch.Close()
+
+	// always push space into stderr to make sure the caller can always
+	// safely call read(stderr) without blocking. this stderr is only used
+	// to request proxying of TCP/IP via reverse tunnel.
+	fmt.Fprint(ch.Stderr(), " ")
+
+	a.agent = agent.NewClient(ch)
+	a.agentChan = ch
+
+	log.Errorf("agent set!")
+}
+
 // runHeartbeat is a blocking function which runs in a loop sending heartbeats
 // to the given SSH connection.
 //
@@ -352,6 +360,7 @@ func (a *Agent) runHeartbeat(conn *ssh.Client) {
 		}
 		newAccesspointC := conn.HandleChannelOpen(chanAccessPoint)
 		newTransportC := conn.HandleChannelOpen(chanTransport)
+		newAgentC := conn.HandleChannelOpen("forward-agent")
 
 		// send first ping right away, then start a ping timer:
 		hb.SendRequest("ping", false, nil)
@@ -398,6 +407,19 @@ func (a *Agent) runHeartbeat(conn *ssh.Client) {
 					continue
 				}
 				go a.proxyTransport(ch, req)
+			// forward agent to remote site
+			case nch := <-newAgentC:
+				if nch == nil {
+					continue
+				}
+				a.log.Infof("[TUNNEL CLIENT] forward request: %v", nch.ChannelType())
+				ch, req, err := nch.Accept()
+				if err != nil {
+					a.log.Errorf("failed to accept request: %v", err)
+					continue
+				}
+				log.Errorf("sending to proxyagentforward")
+				go a.proxyAgentForward(ch, req)
 			}
 		}
 	}

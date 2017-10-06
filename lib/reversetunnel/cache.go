@@ -65,7 +65,7 @@ func getCertificate(addr string, authService auth.ClientI) (ssh.Signer, error) {
 	return certificate, nil
 }
 
-func generateHostCert(principal string) (ssh.Signer, error) {
+func generateHostCert(principal string, authService auth.ClientI) (ssh.Signer, error) {
 	keygen := native.New()
 	defer keygen.Close()
 
