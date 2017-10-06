@@ -59,9 +59,10 @@ type Exec interface {
 // execResult is used internally to send the result of a command execution from
 // a goroutine to SSH request handler and back to the calling client
 type ExecResult struct {
+	// Command is the command that was executed.
 	Command string
 
-	// returned exec code
+	// Code is return code that execution of the command resulted in.
 	Code int
 }
 
