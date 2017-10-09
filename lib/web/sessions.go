@@ -464,7 +464,7 @@ func (s *sessionCache) GetCertificateWithOTP(c client.CreateSSHCertReq) (*client
 		return nil, trace.Wrap(err)
 	}
 
-	clt, err := auth.NewTunClient("web.session.password+otp", s.authServers, c.User, method)
+	clt, err := auth.NewTunClient("web.session.password+otp", s.authServers, c.User, method, auth.TunClientDisableRefreshLoop())
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

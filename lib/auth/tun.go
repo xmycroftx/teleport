@@ -85,6 +85,7 @@ type TunClient struct {
 	discoveredAuthServers []utils.NetAddr
 	authMethods           []ssh.AuthMethod
 	refreshTicker         *time.Ticker
+	runRefreshLoop        bool
 	closeC                chan struct{}
 	closeOnce             sync.Once
 	addrStorage           utils.AddrStorage
@@ -757,6 +758,12 @@ func TunClientStorage(storage utils.AddrStorage) TunClientOption {
 	}
 }
 
+func TunClientDisableRefreshLoop() TunClientOption {
+	return func(t *TunClient) {
+		t.runRefreshLoop = false
+	}
+}
+
 // NewTunClient returns an instance of new HTTP client to Auth server API
 // exposed over SSH tunnel, so client  uses SSH credentials to dial and authenticate
 //  - purpose is mostly for debuggin, like "web client" or "reverse tunnel client"
@@ -780,12 +787,14 @@ func NewTunClient(purpose string,
 		user:              user,
 		staticAuthServers: authServers,
 		authMethods:       authMethods,
+		runRefreshLoop:    true,
 		closeC:            make(chan struct{}),
 		throttler:         throttler,
 	}
 	for _, o := range opts {
 		o(tc)
 	}
+
 	log.Debugf("NewTunClient(%v) with auth: %v", purpose, authServers)
 
 	clt, err := NewClient("http://stub:0", tc.Dial)
@@ -889,9 +898,11 @@ func (c *TunClient) Dial(network, address string) (net.Conn, error) {
 	}
 	// dialed & authenticated? lets start synchronizing the
 	// list of auth servers:
-	if c.refreshTicker == nil {
-		c.refreshTicker = time.NewTicker(defaults.AuthServersRefreshPeriod)
-		go c.authServersSyncLoop()
+	if c.runRefreshLoop {
+		if c.refreshTicker == nil {
+			c.refreshTicker = time.NewTicker(defaults.AuthServersRefreshPeriod)
+			go c.authServersSyncLoop()
+		}
 	}
 	return &tunConn{client: client, Conn: conn}, nil
 }
