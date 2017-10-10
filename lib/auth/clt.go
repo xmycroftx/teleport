@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gravitational/roundtrip"
@@ -60,8 +61,13 @@ type Dialer func(network, addr string) (net.Conn, error)
 // tunnel first, and then do HTTP-over-SSH. This client is wrapped by auth.TunClient
 // in lib/auth/tun.go
 type Client struct {
+	mu sync.Mutex
+
 	roundtrip.Client
 	transport *http.Transport
+
+	dialer Dialer
+	conn   net.Conn
 }
 
 // NewTracer returns request tracer based on the logging level

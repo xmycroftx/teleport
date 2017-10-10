@@ -35,6 +35,7 @@ import (
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
 
+	"github.com/gravitational/roundtrip"
 	"github.com/gravitational/trace"
 	"github.com/mailgun/ttlmap"
 	log "github.com/sirupsen/logrus"
@@ -85,7 +86,7 @@ type TunClient struct {
 	discoveredAuthServers []utils.NetAddr
 	authMethods           []ssh.AuthMethod
 	refreshTicker         *time.Ticker
-	runRefreshLoop        bool
+	httpClient            roundtrip.ClientParam
 	closeC                chan struct{}
 	closeOnce             sync.Once
 	addrStorage           utils.AddrStorage
@@ -95,6 +96,9 @@ type TunClient struct {
 	// throttler is used to throttle auth servers that we have failed to dial
 	// for some period of time
 	throttler *ttlmap.TtlMap
+
+	establishedConn net.Conn
+	dialer          Dialer
 }
 
 // ServerOption is the functional argument passed to the server
@@ -758,9 +762,9 @@ func TunClientStorage(storage utils.AddrStorage) TunClientOption {
 	}
 }
 
-func TunClientDisableRefreshLoop() TunClientOption {
+func TunClientDisableConnectionPool() TunClientOption {
 	return func(t *TunClient) {
-		t.runRefreshLoop = false
+		t.dialer = t.SingleConnDial
 	}
 }
 
@@ -787,17 +791,17 @@ func NewTunClient(purpose string,
 		user:              user,
 		staticAuthServers: authServers,
 		authMethods:       authMethods,
-		runRefreshLoop:    true,
 		closeC:            make(chan struct{}),
 		throttler:         throttler,
 	}
+	tc.dialer = tc.Dial
 	for _, o := range opts {
 		o(tc)
 	}
 
 	log.Debugf("NewTunClient(%v) with auth: %v", purpose, authServers)
 
-	clt, err := NewClient("http://stub:0", tc.Dial)
+	clt, err := NewClient("http://stub:0", tc.dialer)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -898,13 +902,32 @@ func (c *TunClient) Dial(network, address string) (net.Conn, error) {
 	}
 	// dialed & authenticated? lets start synchronizing the
 	// list of auth servers:
-	if c.runRefreshLoop {
-		if c.refreshTicker == nil {
-			c.refreshTicker = time.NewTicker(defaults.AuthServersRefreshPeriod)
-			go c.authServersSyncLoop()
-		}
+	if c.refreshTicker == nil {
+		c.refreshTicker = time.NewTicker(defaults.AuthServersRefreshPeriod)
+		go c.authServersSyncLoop()
 	}
 	return &tunConn{client: client, Conn: conn}, nil
+}
+
+func (c *TunClient) SingleConnDial(network string, address string) (net.Conn, error) {
+	c.Lock()
+	defer c.Unlock()
+
+	log.Debugf("TunClient[%s].SingleConnDial()", c.purpose)
+
+	// if we have already established a connection, keep using it
+	if c.establishedConn != nil {
+		return c.establishedConn, nil
+	}
+
+	// if we don't have a established connection yet: dial
+	conn, err := c.Dial(network, address)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	c.establishedConn = conn
+
+	return conn, nil
 }
 
 func (c *TunClient) fetchAndSync() error {

@@ -459,12 +459,14 @@ func (s *sessionCache) GetCertificateWithoutOTP(c client.CreateSSHCertReq) (*cli
 }
 
 func (s *sessionCache) GetCertificateWithOTP(c client.CreateSSHCertReq) (*client.SSHLoginResponse, error) {
+	log.Errorf("GetCertificateWithOTP")
+
 	method, err := auth.NewWebPasswordAuth(c.User, []byte(c.Password), c.OTPToken)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	clt, err := auth.NewTunClient("web.session.password+otp", s.authServers, c.User, method, auth.TunClientDisableRefreshLoop())
+	clt, err := auth.NewTunClient("web.session.password+otp", s.authServers, c.User, method, auth.TunClientDisableConnectionPool())
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

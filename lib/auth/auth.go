@@ -270,6 +270,7 @@ func (s *AuthServer) WithUserLock(username string, authenticateFn func() error) 
 		return trace.Wrap(fnErr)
 	}
 	loginAttempts, err := s.Identity.GetUserLoginAttempts(username)
+	log.Errorf("loginAttempts: %v", len(loginAttempts))
 	if err != nil {
 		log.Error(trace.DebugReport(err))
 		return trace.Wrap(fnErr)
