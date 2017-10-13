@@ -114,6 +114,12 @@ const (
 	MetaNameClusterAuthPreference = "cluster-auth-preference"
 
 	// KindClusterName is a type of configuration resource that contains the cluster name.
+	KindClusterConfig = "cluster_config"
+
+	// MetaNameClusterName is the name of a configuration resource for cluster name.
+	MetaNameClusterConfig = "cluster-config"
+
+	// KindClusterName is a type of configuration resource that contains the cluster name.
 	KindClusterName = "cluster_name"
 
 	// MetaNameClusterName is the name of a configuration resource for cluster name.

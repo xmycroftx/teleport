@@ -803,6 +803,25 @@ func (a *AuthWithRoles) SetClusterName(c services.ClusterName) error {
 	return a.authServer.SetClusterName(c)
 }
 
+// GetClusterConfig gets cluster configuration.
+func (a *AuthWithRoles) GetClusterConfig() (services.ClusterConfig, error) {
+	if err := a.action(defaults.Namespace, services.KindClusterConfig, services.VerbRead); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return a.authServer.GetClusterConfig()
+}
+
+// SetClusterConfig sets cluster level configuration.
+func (a *AuthWithRoles) SetClusterConfig(c services.ClusterConfig) error {
+	if err := a.action(defaults.Namespace, services.KindClusterConfig, services.VerbCreate); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := a.action(defaults.Namespace, services.KindClusterConfig, services.VerbUpdate); err != nil {
+		return trace.Wrap(err)
+	}
+	return a.authServer.SetClusterConfig(c)
+}
+
 // GetStaticTokens gets the list of static tokens used to provision nodes.
 func (a *AuthWithRoles) GetStaticTokens() (services.StaticTokens, error) {
 	if err := a.action(defaults.Namespace, services.KindStaticTokens, services.VerbRead); err != nil {
