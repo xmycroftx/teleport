@@ -28,10 +28,14 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/srv/forward"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/teleport/lib/utils/proxy"
@@ -39,7 +43,6 @@ import (
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -135,6 +138,9 @@ type Agent struct {
 	// principals is the list of principals of the server this agent
 	// is currently connected to
 	principals []string
+
+	agent     agent.Agent
+	agentChan ssh.Channel
 }
 
 // NewAgent returns a new reverse tunnel agent
@@ -394,14 +400,47 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 	var err error
 
 	// loop over all servers and try and connect to one of them
-	for _, s := range servers {
-		conn, err = net.Dial("tcp", s)
-		if err == nil {
-			break
+	if server == RemoteAuthServer {
+		for _, s := range servers {
+			conn, err = net.Dial("tcp", s)
+			if err == nil {
+				break
+			}
+
+			// log the reason we were not able to connect
+			log.Debugf(trace.DebugReport(err))
+		}
+	} else {
+		// get cluster level config to figure out session recording mode
+		clusterConfig, err := a.Client.GetClusterConfig()
+		if err != nil {
+			// TODO(russjones): Handle this better.
+			log.Errorf("err: %v", err)
+			return
 		}
 
-		// log the reason we were not able to connect
-		log.Debugf(trace.DebugReport(err))
+		// if we are recording at the proxy, return a connection to a in-memory
+		// server that can forward requests to a remote ssh server (can be teleport
+		// or openssh)
+		if clusterConfig.IsRecordAtProxy() {
+			hostCertificate, err := getCertificate(server, a.Client)
+			if err != nil {
+				// TODO(russjones): Handle this better.
+				log.Errorf("unable to get cert from cache")
+			}
+
+			remoteServer, err := forward.New(a.Client, a.agent, server, hostCertificate)
+			if err != nil {
+				// TODO(russjones): Handle this better.
+				log.Errorf("unable to create new forward server")
+			}
+
+			a.Debugf("remote.Dial(to=%v) using recording proxy", server)
+			conn, err = remoteServer.Dial(server)
+		} else {
+			a.Debugf("remote.Dial(to=%v) using standard proxy", server)
+			conn, err = net.Dial("tcp", server)
+		}
 	}
 
 	// if we were not able to connect to any server, write the last connection
@@ -435,6 +474,22 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 	}()
 
 	wg.Wait()
+}
+
+func (a *Agent) proxyAgentForward(ch ssh.Channel, reqC <-chan *ssh.Request) {
+	log.Debugf("[HA Agent] proxyAgentForward")
+	// TODO(russjones): We need to close this.
+	//defer ch.Close()
+
+	// always push space into stderr to make sure the caller can always
+	// safely call read(stderr) without blocking. this stderr is only used
+	// to request proxying of TCP/IP via reverse tunnel.
+	fmt.Fprint(ch.Stderr(), " ")
+
+	a.agent = agent.NewClient(ch)
+	a.agentChan = ch
+
+	log.Errorf("agent set!")
 }
 
 // run is the main agent loop, constantly tries to re-establish
@@ -538,6 +593,7 @@ func (a *Agent) processRequests(conn *ssh.Client) error {
 	newAccesspointC := conn.HandleChannelOpen(chanAccessPoint)
 	newTransportC := conn.HandleChannelOpen(chanTransport)
 	newDiscoveryC := conn.HandleChannelOpen(chanDiscovery)
+	newAgentC := conn.HandleChannelOpen("forward-agent")
 
 	// send first ping right away, then start a ping timer:
 	hb.SendRequest("ping", false, nil)
@@ -597,6 +653,19 @@ func (a *Agent) processRequests(conn *ssh.Client) error {
 				continue
 			}
 			go a.handleDiscovery(ch, req)
+		// forward agent to remote site
+		case nch := <-newAgentC:
+			if nch == nil {
+				continue
+			}
+			a.Infof("[TUNNEL CLIENT] forward request: %v", nch.ChannelType())
+			ch, req, err := nch.Accept()
+			if err != nil {
+				a.Errorf("failed to accept request: %v", err)
+				continue
+			}
+			log.Errorf("sending to proxyagentforward")
+			go a.proxyAgentForward(ch, req)
 		}
 	}
 }

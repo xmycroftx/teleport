@@ -1358,6 +1358,7 @@ func (h *Handler) siteSessionsGet(w http.ResponseWriter, r *http.Request, p http
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+
 	return siteSessionsGetResponse{Sessions: sessions}, nil
 }
 
@@ -1390,6 +1391,7 @@ func (h *Handler) siteSessionGet(w http.ResponseWriter, r *http.Request, p httpr
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+
 	return *sess, nil
 }
 

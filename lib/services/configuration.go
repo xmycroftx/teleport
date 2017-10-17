@@ -32,7 +32,7 @@ type ClusterConfiguration interface {
 
 	// GetAuthPreference gets services.AuthPreference from the backend.
 	GetAuthPreference() (AuthPreference, error)
-	// SetAuthPreference sets services.AuthPreference from the backend.
+	// SetAuthPreference sets services.AuthPreference on the backend.
 	SetAuthPreference(AuthPreference) error
 
 	// GetClusterConfig gets services.ClusterConfig from the backend.

@@ -26,6 +26,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
@@ -35,7 +38,6 @@ import (
 
 	"github.com/gravitational/trace"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
 )
 
 // ProxyClient implements ssh client to a teleport proxy
@@ -249,6 +251,18 @@ func (proxy *ProxyClient) ConnectToNode(ctx context.Context, nodeAddress string,
 		}
 	}
 
+	// always try and forward our agent. this is to support the recording proxy.
+	// to maintain interoperability with openssh, if agent forwarding is not
+	// supported the server will log the error and continue processing requests.
+	err = agent.ForwardToAgent(proxy.Client, proxy.teleportClient.localAgent.Agent)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	err = agent.RequestAgentForwarding(proxySession)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
 	err = proxySession.RequestSubsystem("proxy:" + nodeAddress)
 	if err != nil {
 		// read the stderr output from the failed SSH session and append
@@ -284,9 +298,23 @@ func (proxy *ProxyClient) ConnectToNode(ctx context.Context, nodeAddress string,
 	}
 
 	client := ssh.NewClient(conn, chans, reqs)
-	if err != nil {
-		return nil, trace.Wrap(err)
+
+	// if agent forwarding was requested and we have an agent, try and forward agent.
+	if proxy.teleportClient.ForwardAgent && proxy.teleportClient.localAgent.Agent != nil {
+		session, err := client.NewSession()
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		err = agent.ForwardToAgent(client, proxy.teleportClient.localAgent.Agent)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		err = agent.RequestAgentForwarding(session)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
 	}
+
 	return &NodeClient{Client: client, Proxy: proxy, Namespace: defaults.Namespace}, nil
 }
 

@@ -538,7 +538,7 @@ func (cs *CachingAuthClient) try(f func() error) error {
 	err := trace.ConvertSystemError(f())
 	if trace.IsConnectionProblem(err) {
 		cs.lastErrorTime = time.Now()
-		cs.Warningf("connection problem: failed connect to the auth servers, using local cache")
+		cs.Warningf("connection problem: failed connect to the auth servers, using local cache: %v", err)
 	}
 	return err
 }

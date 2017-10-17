@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package srv implements SSH server that supports multiplexing
 // tunneling, SSH connections proxying and only supports Key based auth
-package srv
+package standard
 
 import (
 	"fmt"
@@ -40,6 +40,7 @@ import (
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
+	psrv "github.com/gravitational/teleport/lib/srv"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/teleagent"
 	"github.com/gravitational/teleport/lib/utils"
@@ -65,7 +66,7 @@ type Server struct {
 	hostSigner    ssh.Signer
 	shell         string
 	authService   auth.AccessPoint
-	reg           *sessionRegistry
+	reg           *psrv.SessionRegistry
 	sessionServer rsession.Service
 	limiter       *limiter.Limiter
 
@@ -111,6 +112,22 @@ type Server struct {
 	// macAlgorithms is a list of message authentication codes (MAC) that
 	// the server supports. If omitted the defaults will be used.
 	macAlgorithms []string
+}
+
+func (s *Server) GetNamespace() string {
+	return s.namespace
+}
+
+func (s *Server) GetAuditLog() events.IAuditLog {
+	return s.alog
+}
+
+func (s *Server) GetAuthService() auth.AccessPoint {
+	return s.authService
+}
+
+func (s *Server) GetSessionServer() rsession.Service {
+	return s.sessionServer
 }
 
 // ServerOption is a functional option passed to the server
@@ -266,7 +283,6 @@ func New(addr utils.NetAddr,
 		return nil, trace.Wrap(err)
 	}
 	s.certChecker = ssh.CertChecker{IsAuthority: s.isAuthority}
-
 	for _, o := range options {
 		if err := o(s); err != nil {
 			return nil, trace.Wrap(err)
@@ -280,7 +296,7 @@ func New(addr utils.NetAddr,
 		component = teleport.ComponentNode
 	}
 
-	s.reg = newSessionRegistry(s)
+	s.reg = psrv.NewSessionRegistry(s)
 	srv, err := sshutils.NewServer(
 		component,
 		addr, s, signers,
@@ -301,17 +317,11 @@ func (s *Server) getNamespace() string {
 	return services.ProcessNamespace(s.namespace)
 }
 
-func (s *Server) logFields(fields log.Fields) log.Fields {
-	var component string
+func (s *Server) Component() string {
 	if s.proxyMode {
-		component = teleport.ComponentProxy
-	} else {
-		component = teleport.ComponentNode
+		return teleport.ComponentProxy
 	}
-	return log.Fields{
-		trace.Component:       component,
-		trace.ComponentFields: fields,
-	}
+	return teleport.ComponentNode
 }
 
 // Addr returns server address
@@ -460,54 +470,49 @@ func (s *Server) extractRolesFromCert(cert *ssh.Certificate) ([]string, error) {
 	return services.UnmarshalCertRoles(data)
 }
 
-// checkPermissionToLogin checks the given certificate (supplied by a connected client)
-// to see if this certificate can be allowed to login as user:login pair
-func (s *Server) checkPermissionToLogin(cert *ssh.Certificate, teleportUser, osUser string) (string, error) {
-	// enumerate all known CAs and see if any of them signed the
-	// supplied certificate
+// checkPermissionToLogin checks the given certificate (supplied by a connected
+// client) to see if this certificate can be allowed to login as user:login
+// pair to requested server.
+func (s *Server) checkPermissionToLogin(cert *ssh.Certificate, clusterName string, teleportUser, osUser string) error {
 	log.Debugf("[HA SSH NODE] checkPermsissionToLogin(%v, %v)", teleportUser, osUser)
-	cas, err := s.authService.GetCertAuthorities(services.UserCA, false)
+
+	// get the ca that signd the users certificate
+	ca, err := s.authorityForCert(cert.SignatureKey)
 	if err != nil {
-		return "", trace.Wrap(err)
-	}
-	var ca services.CertAuthority
-	for i := range cas {
-		checkers, err := cas[i].Checkers()
-		if err != nil {
-			return "", trace.Wrap(err)
-		}
-		for _, checker := range checkers {
-			if sshutils.KeysEqual(cert.SignatureKey, checker) {
-				ca = cas[i]
-				break
-			}
-		}
-	}
-	// the certificate was signed by unknown authority
-	if ca == nil {
-		return "", trace.AccessDenied(
-			"the certificate for user '%v' is signed by untrusted CA",
-			teleportUser)
+		return trace.Wrap(err)
 	}
 
-	domainName, err := s.authService.GetDomainName()
+	// get roles assigned to this user
+	roles, err := s.fetchRoleSet(cert, ca, teleportUser, clusterName)
 	if err != nil {
-		return "", trace.Wrap(err)
+		return trace.Wrap(err)
 	}
 
+	// check if roles allow access to server
+	if err := roles.CheckAccessToServer(osUser, s.getInfo()); err != nil {
+		return trace.AccessDenied("user %s@%s is not authorized to login as %v@%s: %v",
+			teleportUser, ca.GetClusterName(), osUser, clusterName, err)
+	}
+
+	return nil
+}
+
+// fetchRoleSet fetches the services.RoleSet assigned to a Teleport user.
+func (s *Server) fetchRoleSet(cert *ssh.Certificate, ca services.CertAuthority, teleportUser string, clusterName string) (services.RoleSet, error) {
 	// for local users, go and check their individual permissions
 	var roles services.RoleSet
-	if domainName == ca.GetClusterName() {
+	if clusterName == ca.GetClusterName() {
+		log.Errorf("here!")
 		users, err := s.authService.GetUsers()
 		if err != nil {
-			return "", trace.Wrap(err)
+			return nil, trace.Wrap(err)
 		}
 		for _, u := range users {
 			if u.GetName() == teleportUser {
 				// pass along the traits so we get the substituted roles for this user
 				roles, err = services.FetchRoles(u.GetRoles(), s.authService, u.GetTraits())
 				if err != nil {
-					return "", trace.Wrap(err)
+					return nil, trace.Wrap(err)
 				}
 			}
 		}
@@ -515,12 +520,12 @@ func (s *Server) checkPermissionToLogin(cert *ssh.Certificate, teleportUser, osU
 		certRoles, err := s.extractRolesFromCert(cert)
 		if err != nil {
 			log.Errorf("failed to extract roles from cert: %v", err)
-			return "", trace.AccessDenied("failed to parse certificate roles")
+			return nil, trace.AccessDenied("failed to parse certificate roles")
 		}
 		roleNames, err := ca.CombinedMapping().Map(certRoles)
 		if err != nil {
 			log.Errorf("failed to map roles %v", err)
-			return "", trace.AccessDenied("failed to map roles")
+			return nil, trace.AccessDenied("failed to map roles")
 		}
 		// pass the principals on the certificate along as the login traits
 		// to the remote cluster.
@@ -529,87 +534,126 @@ func (s *Server) checkPermissionToLogin(cert *ssh.Certificate, teleportUser, osU
 		}
 		roles, err = services.FetchRoles(roleNames, s.authService, traits)
 		if err != nil {
-			return "", trace.Wrap(err)
-		}
-	}
-
-	if err := roles.CheckAccessToServer(osUser, s.getInfo()); err != nil {
-		return "", trace.AccessDenied("user %s@%s is not authorized to login as %v@%s: %v",
-			teleportUser, ca.GetClusterName(), osUser, domainName, err)
-	}
-
-	return domainName, nil
-}
-
-// fetchRoleSet fretches role set for a given user
-func (s *Server) fetchRoleSet(teleportUser string, clusterName string) (services.RoleSet, error) {
-	localClusterName, err := s.authService.GetDomainName()
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	cas, err := s.authService.GetCertAuthorities(services.UserCA, false)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	var ca services.CertAuthority
-	for i := range cas {
-		if cas[i].GetClusterName() == clusterName {
-			ca = cas[i]
-			break
-		}
-	}
-	if ca == nil {
-		return nil, trace.NotFound("could not find certificate authority for cluster %v and user %v", clusterName, teleportUser)
-	}
-
-	var roles services.RoleSet
-	if localClusterName == clusterName {
-		users, err := s.authService.GetUsers()
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-		for _, u := range users {
-			if u.GetName() == teleportUser {
-				roles, err = services.FetchRoles(u.GetRoles(), s.authService, u.GetTraits())
-				if err != nil {
-					return nil, trace.Wrap(err)
-				}
-			}
-		}
-	} else {
-		roles, err = services.FetchRoles(ca.GetRoles(), s.authService, nil)
-		if err != nil {
 			return nil, trace.Wrap(err)
 		}
 	}
-	return roles, err
+
+	return roles, nil
 }
 
 // isAuthority is called during checking the client key, to see if the signing
 // key is the real CA authority key.
 func (s *Server) isAuthority(cert ssh.PublicKey) bool {
-	// find cert authority by it's key
+	if _, err := s.authorityForCert(cert); err != nil {
+		return false
+	}
+	return true
+}
+
+// authorityForCert checks if the certificate was signed by a Teleport
+// Certificate Authority and returns it.
+func (s *Server) authorityForCert(cert ssh.PublicKey) (services.CertAuthority, error) {
+	// get all user certificate authorities
 	cas, err := s.authService.GetCertAuthorities(services.UserCA, false)
 	if err != nil {
 		log.Warningf("%v", trace.DebugReport(err))
-		return false
+		return nil, trace.Wrap(err)
 	}
 
+	// find the one that signed our certificate
+	var ca services.CertAuthority
 	for i := range cas {
 		checkers, err := cas[i].Checkers()
 		if err != nil {
 			log.Warningf("%v", err)
-			return false
+			return nil, trace.Wrap(err)
 		}
 		for _, checker := range checkers {
 			if sshutils.KeysEqual(cert, checker) {
-				return true
+				ca = cas[i]
+				break
 			}
 		}
 	}
-	return false
+
+	// the certificate was signed by unknown authority
+	if ca == nil {
+		return nil, trace.AccessDenied("the certificate signed by untrusted CA")
+	}
+
+	return ca, nil
+}
+
+// checkAgentForward checks if the role allows agent forwarding.
+func (s *Server) checkAgentForward(ctx *psrv.ServerContext) error {
+	cert, err := ctx.GetCertificate()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	ca, err := s.authorityForCert(cert.SignatureKey)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	roles, err := s.fetchRoleSet(cert, ca, ctx.TeleportUser, ctx.ClusterName)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	if err := roles.CheckAgentForward(ctx.Login); err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
+}
+
+// serveAgent will build the a sock path for this user and serve an SSH agent on unix socket.
+func (s *Server) serveAgent(ctx *psrv.ServerContext) error {
+	// gather information about user and process. this will be used to set the
+	// socket path and permissions
+	systemUser, err := user.Lookup(ctx.Login)
+	if err != nil {
+		return trace.ConvertSystemError(err)
+	}
+	uid, err := strconv.Atoi(systemUser.Uid)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	gid, err := strconv.Atoi(systemUser.Gid)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	pid := os.Getpid()
+
+	// build the socket path and set permissions
+	socketDir, err := ioutil.TempDir(os.TempDir(), "teleport-")
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	dirCloser := &utils.RemoveDirCloser{Path: socketDir}
+	socketPath := filepath.Join(socketDir, fmt.Sprintf("teleport-%v.socket", pid))
+	if err := os.Chown(socketDir, uid, gid); err != nil {
+		if err := dirCloser.Close(); err != nil {
+			log.Warn("failed to remove directory: %v", err)
+		}
+		return trace.ConvertSystemError(err)
+	}
+
+	// start an agent on a unix socket
+	agentServer := &teleagent.AgentServer{Agent: ctx.GetAgent()}
+	err = agentServer.ListenUnixSocket(socketPath, uid, gid, 0600)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	ctx.SetEnv(teleport.SSHAuthSock, socketPath)
+	ctx.SetEnv(teleport.SSHAgentPID, fmt.Sprintf("%v", pid))
+	ctx.AddCloser(agentServer)
+	ctx.AddCloser(dirCloser)
+	ctx.Debugf("[SSH:node] opened agent channel for teleport user %v and socket %v", ctx.TeleportUser, socketPath)
+	go agentServer.Serve()
+
+	return nil
 }
 
 // EmitAuditEvent logs a given event to the audit log attached to the
@@ -691,20 +735,29 @@ func (s *Server) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permiss
 		}
 	}
 
-	// this is the only way we know of to pass valid principal with the
-	// connection
+	clusterName, err := s.authService.GetDomainName()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// this is the only way we know of to pass valid additional data about the
+	// connection to the handlers
 	permissions.Extensions[utils.CertTeleportUser] = teleportUser
+	permissions.Extensions[utils.CertTeleportClusterName] = clusterName
+	permissions.Extensions["cert"] = string(ssh.MarshalAuthorizedKey(cert))
 
 	if s.proxyMode {
 		return permissions, nil
 	}
-	clusterName, err := s.checkPermissionToLogin(cert, teleportUser, conn.User())
+
+	// if we are trying to connect to a node, make sure rbac rules allow it
+	err = s.checkPermissionToLogin(cert, clusterName, teleportUser, conn.User())
 	if err != nil {
 		logger.Errorf("Permission denied: %v", err)
 		logAuditEvent(err)
 		return nil, trace.Wrap(err)
 	}
-	permissions.Extensions[utils.CertTeleportClusterName] = clusterName
+
 	return permissions, nil
 }
 
@@ -765,9 +818,9 @@ func (s *Server) HandleNewChan(nc net.Conn, sconn *ssh.ServerConn, nch ssh.NewCh
 // handleDirectTCPIPRequest does the port forwarding
 func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel, req *sshutils.DirectTCPIPReq) {
 	// ctx holds the connection context and keeps track of the associated resources
-	ctx := newCtx(s, sconn)
-	ctx.isTestStub = s.isTestStub
-	ctx.addCloser(ch)
+	ctx := psrv.NewServerContext(s, sconn)
+	ctx.IsTestStub = s.isTestStub
+	ctx.AddCloser(ch)
 	defer ctx.Debugf("direct-tcp closed")
 	defer ctx.Close()
 
@@ -782,7 +835,7 @@ func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel,
 	// audit event:
 	s.EmitAuditEvent(events.PortForwardEvent, events.EventFields{
 		events.PortForwardAddr: addr,
-		events.EventLogin:      ctx.login,
+		events.EventLogin:      ctx.Login,
 		events.LocalAddr:       sconn.LocalAddr().String(),
 		events.RemoteAddr:      sconn.RemoteAddr().String(),
 	})
@@ -810,18 +863,9 @@ func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel,
 // this is the only way to make web-based terminal UI not break apart
 // when window changes its size
 func (s *Server) handleTerminalResize(sconn *ssh.ServerConn, ch ssh.Channel) {
-	// the party may not be immediately available for this connection,
-	// keep asking for a full second:
-	for i := 0; i < 10; i++ {
-		party := s.reg.PartyForConnection(sconn)
-		if party == nil {
-			time.Sleep(time.Millisecond * 100)
-			continue
-		}
-		// this starts a loop which will keep updating the terminal
-		// size for every SSH write back to this connection
-		party.termSizePusher(ch)
-		return
+	err := s.reg.PushTermSizeToParty(sconn, ch)
+	if err != nil {
+		log.Warnf("Unable to push terminal size to party: %v", err)
 	}
 }
 
@@ -829,43 +873,15 @@ func (s *Server) handleTerminalResize(sconn *ssh.ServerConn, ch ssh.Channel) {
 // this function's loop handles all the "exec", "subsystem" and "shell" requests.
 func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in <-chan *ssh.Request) {
 	// ctx holds the connection context and keeps track of the associated resources
-	ctx := newCtx(s, sconn)
-	ctx.isTestStub = s.isTestStub
-	ctx.addCloser(ch)
+	ctx := psrv.NewServerContext(s, sconn)
+	ctx.IsTestStub = s.isTestStub
+	ctx.AddCloser(ch)
 	defer ctx.Close()
-
-	// As SSH conversation progresses, at some point a session will be created and
-	// its ID will be added to the environment
-	updateContext := func() error {
-		ssid, found := ctx.getEnv(sshutils.SessionEnvVar)
-		if !found {
-			return nil
-		}
-		// make sure whatever session is requested is a valid session
-		_, err := rsession.ParseID(ssid)
-		if err != nil {
-			return trace.BadParameter("invalid session id")
-		}
-		findSession := func() (*session, bool) {
-			s.reg.Lock()
-			defer s.reg.Unlock()
-			return s.reg.findSession(rsession.ID(ssid))
-		}
-		// update ctx with a session ID
-		ctx.session, _ = findSession()
-		if ctx.session == nil {
-			log.Debugf("[SSH] will create new session for SSH connection %v", sconn.RemoteAddr())
-		} else {
-			log.Debugf("[SSH] will join session %v for SSH connection %v", ctx.session, sconn.RemoteAddr())
-		}
-
-		return nil
-	}
 
 	for {
 		// update ctx with the session ID:
 		if !s.proxyMode {
-			err := updateContext()
+			err := ctx.JoinOrCreateSession(s.reg)
 			if err != nil {
 				errorMessage := fmt.Sprintf("unable to update context: %v", err)
 				ctx.Errorf("[SSH] %v", errorMessage)
@@ -880,10 +896,10 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 			}
 		}
 		select {
-		case creq := <-ctx.subsystemResultC:
+		case creq := <-ctx.SubsystemResultC:
 			// this means that subsystem has finished executing and
 			// want us to close session and the channel
-			ctx.Debugf("[SSH] close session request: %v", creq.err)
+			ctx.Debugf("[SSH] close session request: %v", creq.Err)
 			return
 		case req := <-in:
 			if req == nil {
@@ -898,13 +914,13 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 			if req.WantReply {
 				req.Reply(true, nil)
 			}
-		case result := <-ctx.result:
+		case result := <-ctx.Result:
 			ctx.Debugf("[SSH] ctx.result = %v", result)
 			// this means that exec process has finished and delivered the execution result,
 			// we send it back and close the session
-			_, err := ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{C: uint32(result.code)}))
+			_, err := ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{C: uint32(result.Code)}))
 			if err != nil {
-				ctx.Infof("[SSH] %v failed to send exit status: %v", result.command, err)
+				ctx.Infof("[SSH] %v failed to send exit status: %v", result.Command, err)
 			}
 			return
 		}
@@ -913,7 +929,7 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 
 // dispatch receives an SSH request for a subsystem and disptaches the request to the
 // appropriate subsystem implementation
-func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
 	ctx.Debugf("[SSH] ssh.dispatch(req=%v, wantReply=%v)", req.Type, req.WantReply)
 	// if this SSH server is configured to only proxy, we do not support anything other
 	// than our own custom "subsystems" and environment manipulation
@@ -924,6 +940,10 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
 		case "env":
 			// we currently ignore setting any environment variables via SSH for security purposes
 			return s.handleEnv(ch, req, ctx)
+		case sshutils.AgentReq:
+			// process agent forwarding, but we will only forward agent to proxy in
+			// recording proxy mode
+			return s.handleAgentForwardProxy(ch, req, ctx)
 		default:
 			return trace.BadParameter(
 				"proxy doesn't support request type '%v'", req.Type)
@@ -939,8 +959,8 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
 		return s.handlePTYReq(ch, req, ctx)
 	case "shell":
 		// SSH client asked to launch shell, we allocate PTY and start shell session
-		ctx.exec = &execResponse{ctx: ctx}
-		if err := s.reg.openSession(ch, req, ctx); err != nil {
+		ctx.Exec = &psrv.ExecResponse{Ctx: ctx}
+		if err := s.reg.OpenSession(ch, req, ctx); err != nil {
 			log.Error(err)
 			return trace.Wrap(err)
 		}
@@ -960,92 +980,106 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
 		// https://tools.ietf.org/html/draft-ietf-secsh-agent-02
 		// the open ssh proto spec that we implement is here:
 		// http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.agent
-		return s.handleAgentForward(ch, req, ctx)
+		return s.handleAgentForwardNode(ch, req, ctx)
 	default:
 		return trace.BadParameter(
-			"proxy doesn't support request type '%v'", req.Type)
+			"(standard) proxy doesn't support request type '%v'", req.Type)
 	}
 }
 
-func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
-	roles, err := s.fetchRoleSet(ctx.teleportUser, ctx.clusterName)
+// handleAgentForwardProxy will forward the clients agent to the proxy (when
+// the proxy is running in recording mode). When running in normal mode, this
+// request will do nothing. To maintain interoperability, agent forwarding
+// requests should never fail, all errors should be logged and we should
+// continue processing requests.
+func (s *Server) handleAgentForwardProxy(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
+	// check if the users rbac role allows agent forwarding
+	err := s.checkAgentForward(ctx)
 	if err != nil {
-		return trace.Wrap(err)
-	}
-	if err := roles.CheckAgentForward(ctx.login); err != nil {
-		log.Warningf("[SSH:node] denied forward agent %v", err)
-		return trace.Wrap(err)
-	}
-	systemUser, err := user.Lookup(ctx.login)
-	if err != nil {
-		return trace.ConvertSystemError(err)
-	}
-	uid, err := strconv.Atoi(systemUser.Uid)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	gid, err := strconv.Atoi(systemUser.Gid)
-	if err != nil {
-		return trace.Wrap(err)
+		log.Info(err)
+		return nil
 	}
 
-	authChan, _, err := ctx.conn.OpenChannel("auth-agent@openssh.com", nil)
+	// we only support agent forwarding at the proxy when the proxy is in recording mode
+	clusterConfig, err := s.GetAuthService().GetClusterConfig()
 	if err != nil {
-		return trace.Wrap(err)
+		log.Info(err)
+		return nil
 	}
-	clientAgent := agent.NewClient(authChan)
-	ctx.setAgent(clientAgent, authChan)
-
-	pid := os.Getpid()
-	socketDir, err := ioutil.TempDir(os.TempDir(), "teleport-")
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	dirCloser := &utils.RemoveDirCloser{Path: socketDir}
-	socketPath := filepath.Join(socketDir, fmt.Sprintf("teleport-%v.socket", pid))
-	if err := os.Chown(socketDir, uid, gid); err != nil {
-		if err := dirCloser.Close(); err != nil {
-			log.Warn("failed to remove directory: %v", err)
-		}
-		return trace.ConvertSystemError(err)
+	if !clusterConfig.IsRecordAtProxy() {
+		log.Info("proxy is not in recording mode, agent forwarding rejected")
+		return nil
 	}
 
-	agentServer := &teleagent.AgentServer{Agent: clientAgent}
-	err = agentServer.ListenUnixSocket(socketPath, uid, gid, 0600)
+	// open a channel to the client where the client will serve an agent
+	authChan, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
 	if err != nil {
-		return trace.Wrap(err)
+		log.Info(err)
+		return nil
 	}
-	if req.WantReply {
-		req.Reply(true, nil)
+
+	// we save the agent so it can be used when we make a proxy subsystem request
+	// later and use it to build a remote connection to the target node.
+	ctx.SetAgent(agent.NewClient(authChan), authChan)
+
+	return nil
+}
+
+// handleAgentForwardNode will create a unix socket and serve the agent running
+// on the client on it. To maintain interoperability, agent forwarding requests
+// should never fail, all errors should be logged and we should
+// continue processing requests.
+func (s *Server) handleAgentForwardNode(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
+	// check if the users rbac role allows agent forwarding
+	err := s.checkAgentForward(ctx)
+	if err != nil {
+		log.Info(err)
+		return nil
 	}
-	ctx.setEnv(teleport.SSHAuthSock, socketPath)
-	ctx.setEnv(teleport.SSHAgentPID, fmt.Sprintf("%v", pid))
-	ctx.addCloser(agentServer)
-	ctx.addCloser(dirCloser)
-	ctx.Debugf("[SSH:node] opened agent channel for teleport user %v and socket %v", ctx.teleportUser, socketPath)
-	go agentServer.Serve()
+
+	// open a channel to the client where the client will serve an agent
+	authChan, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
+	if err != nil {
+		log.Info(err)
+		return nil
+	}
+
+	// save the agent in the context so it can be used later
+	ctx.SetAgent(agent.NewClient(authChan), authChan)
+
+	// serve an agent on a unix socket on this node
+	err = s.serveAgent(ctx)
+	if err != nil {
+		log.Info(err)
+		return nil
+	}
 
 	return nil
 }
 
 // handleWinChange gets called when 'window chnged' SSH request comes in
-func (s *Server) handleWinChange(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) handleWinChange(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
 	params, err := parseWinChange(req)
 	if err != nil {
 		ctx.Error(err)
 		return trace.Wrap(err)
 	}
-	term := ctx.getTerm()
+	term := ctx.GetTerm()
 	if term != nil {
-		err = term.setWinsize(*params)
+		err = term.SetWinSize(*params)
 		if err != nil {
 			ctx.Error(err)
 		}
 	}
-	return trace.Wrap(s.reg.notifyWinChange(*params, ctx))
+	err = s.reg.NotifyWinChange(*params, ctx)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
 }
 
-func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
 	sb, err := parseSubsystemRequest(s, req)
 	if err != nil {
 		ctx.Warnf("[SSH] %v failed to parse subsystem request: %v", err)
@@ -1054,68 +1088,58 @@ func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *ctx) err
 	ctx.Debugf("[SSH] subsystem request: %v", sb)
 	// starting subsystem is blocking to the client,
 	// while collecting its result and waiting is not blocking
-	if err := sb.start(ctx.conn, ch, req, ctx); err != nil {
+	if err := sb.start(ctx.Conn, ch, req, ctx); err != nil {
 		ctx.Warnf("[SSH] failed executing request: %v", err)
-		ctx.sendSubsystemResult(trace.Wrap(err))
+		ctx.SendSubsystemResult(trace.Wrap(err))
 		return trace.Wrap(err)
 	}
 	go func() {
 		err := sb.wait()
 		log.Debugf("[SSH] %v finished with result: %v", sb, err)
-		ctx.sendSubsystemResult(trace.Wrap(err))
+		ctx.SendSubsystemResult(trace.Wrap(err))
 	}()
 	return nil
 }
 
 // handleEnv accepts environment variables sent by the client and stores them
 // in connection context
-func (s *Server) handleEnv(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) handleEnv(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
 	var e sshutils.EnvReqParams
 	if err := ssh.Unmarshal(req.Payload, &e); err != nil {
 		ctx.Error(err)
 		return trace.Wrap(err, "failed to parse env request")
 	}
-	ctx.setEnv(e.Name, e.Value)
+	log.Errorf("handleEnv: %v %v", e.Name, e.Value)
+	ctx.SetEnv(e.Name, e.Value)
 	return nil
 }
 
 // handlePTYReq allocates PTY for this SSH connection per client's request
-func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
-	var (
-		params *rsession.TerminalParams
-		err    error
-		term   *terminal
-	)
-	r, err := parsePTYReq(req)
+func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
+	// parse and get the window size requested
+	r, err := psrv.ParsePTYReq(req)
 	if err != nil {
 		return trace.Wrap(err)
 	}
-
-	// if the caller asked for an invalid sized pty (like ansible
-	// which asks for a 0x0 size) update the request with defaults
-	err = r.CheckAndSetDefaults()
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	params, err = rsession.NewTerminalParamsFromUint32(r.W, r.H)
+	params, err := rsession.NewTerminalParamsFromUint32(r.W, r.H)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 	ctx.Debugf("[SSH] terminal requested of size %v", *params)
 
-	// already have terminal?
-	if term = ctx.getTerm(); term == nil {
-		term, params, err = requestPTY(req)
+	// get an existing terminal or create a new one
+	term := ctx.GetTerm()
+	if term == nil {
+		term, err = psrv.NewTerminal(ctx)
 		if err != nil {
 			return trace.Wrap(err)
 		}
-		ctx.setTerm(term)
+		ctx.SetTerm(term)
 	}
-	term.setWinsize(*params)
+	term.SetWinSize(*params)
 
 	// update the session:
-	if err := s.reg.notifyWinChange(*params, ctx); err != nil {
+	if err := s.reg.NotifyWinChange(*params, ctx); err != nil {
 		log.Error(err)
 	}
 	return nil
@@ -1125,8 +1149,8 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *ctx) error 
 // a command after making an SSH connection)
 //
 // Note: this also handles 'scp' requests because 'scp' is a subset of "exec"
-func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
-	execResponse, err := parseExecRequest(req, ctx)
+func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *psrv.ServerContext) error {
+	execResponse, err := psrv.ParseExecRequest(req, ctx)
 	if err != nil {
 		ctx.Infof("failed to parse exec request: %v", err)
 		replyError(ch, req, err)
@@ -1137,18 +1161,18 @@ func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
 	}
 	// a terminal has been previously allocate for this command.
 	// run this inside an interactive session
-	if ctx.term != nil {
-		return s.reg.openSession(ch, req, ctx)
+	if ctx.GetTerm() != nil {
+		return s.reg.OpenSession(ch, req, ctx)
 	}
 	// ... otherwise, regular execution:
-	result, err := execResponse.start(ch)
+	result, err := execResponse.Start(ch)
 	if err != nil {
 		ctx.Error(err)
 		replyError(ch, req, err)
 	}
 	if result != nil {
 		ctx.Debugf("%v result collected: %v", execResponse, result)
-		ctx.sendResult(*result)
+		ctx.SendResult(*result)
 	}
 	if err != nil {
 		return trace.Wrap(err)
@@ -1157,12 +1181,12 @@ func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
 	// in case if result is nil and no error, this means that program is
 	// running in the background
 	go func() {
-		result, err = execResponse.wait()
+		result, err = execResponse.Wait()
 		if err != nil {
 			ctx.Errorf("%v wait failed: %v", execResponse, err)
 		}
 		if result != nil {
-			ctx.sendResult(*result)
+			ctx.SendResult(*result)
 		}
 	}()
 	return nil
@@ -1192,21 +1216,14 @@ func replyError(ch ssh.Channel, req *ssh.Request, err error) {
 	}
 }
 
-func closeAll(closers ...io.Closer) error {
-	var err error
-	for _, cl := range closers {
-		if cl == nil {
-			continue
-		}
-		if e := cl.Close(); e != nil {
-			err = e
-		}
+func parseWinChange(req *ssh.Request) (*rsession.TerminalParams, error) {
+	var r sshutils.WinChangeReqParams
+	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
+		return nil, trace.Wrap(err)
 	}
-	return err
-}
-
-type closerFunc func() error
-
-func (f closerFunc) Close() error {
-	return f()
+	params, err := rsession.NewTerminalParamsFromUint32(r.W, r.H)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return params, nil
 }

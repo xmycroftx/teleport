@@ -14,11 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package srv
+package standard
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/gravitational/teleport/lib/srv"
 
 	"github.com/gravitational/trace"
 	"golang.org/x/crypto/ssh"
@@ -32,7 +34,7 @@ type subsys struct {
 // in the context of the session
 type subsystem interface {
 	// start starts subsystem
-	start(*ssh.ServerConn, ssh.Channel, *ssh.Request, *ctx) error
+	start(*ssh.ServerConn, ssh.Channel, *ssh.Request, *srv.ServerContext) error
 	// wait is returned by subystem when it's completed
 	wait() error
 }

@@ -235,6 +235,7 @@ func (ns *NodeSession) allocateTerminal(termType string, s *ssh.Session) (io.Rea
 		int(tsize.Width),
 		ssh.TerminalModes{})
 	if err != nil {
+		log.Errorf("Unable to RequestPTY: %v", err)
 		return nil, trace.Wrap(err)
 	}
 	writer, err := s.StdinPipe()

@@ -22,9 +22,13 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/srv/forward"
 
 	"github.com/gravitational/trace"
 	log "github.com/sirupsen/logrus"
@@ -64,6 +68,22 @@ type localSite struct {
 	lastActive  time.Time
 	srv         *server
 	accessPoint auth.AccessPoint
+
+	agent     agent.Agent
+	agentChan ssh.Channel
+}
+
+func (s *localSite) SetAgent(a agent.Agent, ch ssh.Channel) {
+	clusterConfig, err := s.client.GetClusterConfig()
+	if err != nil {
+		s.log.Errorf("Unable to set agent: %v", err)
+		return
+	}
+
+	if clusterConfig.GetSessionRecording() == services.RecordAtProxy {
+		s.agent = a
+		s.agentChan = ch
+	}
 }
 
 func (s *localSite) CachingAccessPoint() (auth.AccessPoint, error) {
@@ -92,7 +112,38 @@ func (s *localSite) GetLastConnected() time.Time {
 
 // Dial dials a given host in this site (cluster).
 func (s *localSite) Dial(from net.Addr, to net.Addr) (net.Conn, error) {
-	s.log.Debugf("local.Dial(from=%v, to=%v)", from, to)
+	//s.log.Debugf("local.Dial(from=%v, to=%v)", from, to)
+
+	// get cluster level config to figure out session recording mode
+	clusterConfig, err := s.client.GetClusterConfig()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// if we are recording at the proxy, return a connection to a in-memory
+	// server that can forward requests to a remote ssh server (can be teleport
+	// or openssh)
+	if clusterConfig.IsRecordAtProxy() {
+		s.log.Debugf("Dial(from=%v, to=%v) using recording proxy", from, to)
+		hostCertificate, err := getCertificate(to.String(), s.client)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		remoteServer, err := forward.New(s.client, s.agent, from.String(), hostCertificate)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		conn, err := remoteServer.Dial(to.String())
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		return conn, nil
+	}
+
+	s.log.Debugf("Dial(from=%v, to=%v) using standard proxy", from, to)
 	return net.Dial(to.Network(), to.String())
 }
 

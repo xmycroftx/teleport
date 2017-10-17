@@ -24,8 +24,6 @@ import (
 	"path"
 	"path/filepath"
 
-	"gopkg.in/check.v1"
-
 	"golang.org/x/crypto/ssh"
 
 	"github.com/gravitational/teleport/lib/auth"
@@ -34,12 +32,14 @@ import (
 	"github.com/gravitational/teleport/lib/backend/boltbk"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/utils"
+
+	"gopkg.in/check.v1"
 )
 
 // ExecSuite also implements ssh.ConnMetadata
 type ExecSuite struct {
 	usr        *user.User
-	ctx        *ctx
+	ctx        *ServerContext
 	localAddr  net.Addr
 	remoteAddr net.Addr
 }
@@ -75,13 +75,13 @@ func (s *ExecSuite) SetUpSuite(c *check.C) {
 
 	utils.InitLoggerForTests()
 	s.usr, _ = user.Current()
-	s.ctx = &ctx{isTestStub: true}
-	s.ctx.login = s.usr.Username
+	s.ctx = &ServerContext{IsTestStub: true}
+	s.ctx.Login = s.usr.Username
 	s.ctx.session = &session{id: "xxx"}
-	s.ctx.teleportUser = "galt"
-	s.ctx.conn = &ssh.ServerConn{Conn: s}
-	s.ctx.exec = &execResponse{ctx: s.ctx}
-	s.ctx.srv = &Server{authService: a, uuid: "00000000-0000-0000-0000-000000000000"}
+	s.ctx.TeleportUser = "galt"
+	s.ctx.Conn = &ssh.ServerConn{Conn: s}
+	s.ctx.Exec = &ExecResponse{Ctx: s.ctx}
+	//s.ctx.srv = &Server{authService: a, uuid: "00000000-0000-0000-0000-000000000000"}
 	s.localAddr, _ = utils.ParseAddr("127.0.0.1:3022")
 	s.remoteAddr, _ = utils.ParseAddr("10.0.0.5:4817")
 }
@@ -113,8 +113,8 @@ func (s *ExecSuite) TestOSCommandPrep(c *check.C) {
 	c.Assert(cmd.Env, check.DeepEquals, expectedEnv)
 
 	// non-empty command (exec a prog)
-	s.ctx.isTestStub = true
-	s.ctx.exec.cmdName = "ls -lh /etc"
+	s.ctx.IsTestStub = true
+	s.ctx.Exec.CmdName = "ls -lh /etc"
 	cmd, err = prepareCommand(s.ctx)
 	c.Assert(err, check.IsNil)
 	c.Assert(cmd, check.NotNil)
@@ -124,7 +124,7 @@ func (s *ExecSuite) TestOSCommandPrep(c *check.C) {
 	c.Assert(cmd.Env, check.DeepEquals, expectedEnv)
 
 	// command without args
-	s.ctx.exec.cmdName = "top"
+	s.ctx.Exec.CmdName = "top"
 	cmd, err = prepareCommand(s.ctx)
 	c.Assert(err, check.IsNil)
 	c.Assert(cmd.Path, check.Equals, "/bin/sh")

@@ -27,6 +27,9 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+
 	"github.com/gravitational/roundtrip"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/defaults"
@@ -37,7 +40,6 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/mailgun/oxy/forward"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
 )
 
 // remoteSite is a remote site that established the inbound connecton to
@@ -58,6 +60,72 @@ type remoteSite struct {
 	connInfo    services.TunnelConnection
 	ctx         context.Context
 	clock       clockwork.Clock
+}
+
+func (s *remoteSite) SetAgent(a agent.Agent, ch ssh.Channel) {
+	s.Infof("forwarding agent to remote site %v through tunnel", s.domainName)
+	stop := false
+
+	try := func() (net.Conn, error) {
+		remoteConn, err := s.nextConn()
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		var ch ssh.Channel
+		ch, _, err = remoteConn.sshConn.OpenChannel("forward-agent", nil)
+		if err != nil {
+			remoteConn.markInvalid(err)
+			return nil, trace.Wrap(err)
+		}
+
+		stop = true
+		// send a special SSH out-of-band request called "teleport-transport"
+		// the agent on the other side will create a new TCP/IP connection to
+		// 'addr' on its network and will start proxying that connection over
+		// this SSH channel:
+		//var ok bool
+		_, err = ch.SendRequest("", false, []byte(""))
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		log.Errorf("request sent!")
+		//if !ok {
+		//	defer ch.Close()
+		//	// pull the error message from the tunnel client (remote cluster)
+		//	// passed to us via stderr:
+		//	errMessage, _ := ioutil.ReadAll(ch.Stderr())
+		//	if errMessage == nil {
+		//		errMessage = []byte("failed to forward agent")
+		//	}
+		//	return nil, trace.Errorf(strings.TrimSpace(string(errMessage)))
+		//}
+		return utils.NewChConn(remoteConn.sshConn, ch), nil
+	}
+	// loop through existing TCP/IP connections (reverse tunnels) and try
+	// to establish an inbound connection-over-ssh-channel to the remote
+	// cluster (AKA "remotetunnel agent"):
+	var err error
+	var conn net.Conn
+
+	for i := 0; i < s.connectionCount() && !stop; i++ {
+		conn, err = try()
+		log.Errorf("got a conn, gonna server an agent on it")
+		if err == nil {
+			go agent.ServeAgent(a, conn)
+			log.Errorf("serving agent now!")
+			//if err != nil {
+			//	s.log.Errorf("[TUNNEL] Unable to server agent: %v", err)
+			//	return
+			//}
+		}
+		//s.log.Errorf("[TUNNEL] Dial(addr=%v) failed: %v", addr, err)
+	}
+	// didn't connect and no error? this means we didn't have any connected
+	// tunnels to try
+	if err == nil {
+		err = trace.Errorf("%v is offline", s.GetName())
+	}
+	return
 }
 
 func (s *remoteSite) CachingAccessPoint() (auth.AccessPoint, error) {

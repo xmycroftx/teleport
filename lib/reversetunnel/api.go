@@ -20,6 +20,9 @@ import (
 	"net"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+
 	"github.com/gravitational/teleport/lib/auth"
 )
 
@@ -41,6 +44,8 @@ type RemoteSite interface {
 	// CachingAccessPoint returns access point that is lightweight
 	// but is resilient to auth server crashes
 	CachingAccessPoint() (auth.AccessPoint, error)
+
+	SetAgent(a agent.Agent, ch ssh.Channel)
 }
 
 // Server is a TCP/IP SSH server which listens on an SSH endpoint and remote/local

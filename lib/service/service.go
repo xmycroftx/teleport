@@ -44,7 +44,7 @@ import (
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/session"
-	"github.com/gravitational/teleport/lib/srv"
+	"github.com/gravitational/teleport/lib/srv/standard"
 	"github.com/gravitational/teleport/lib/state"
 	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/teleport/lib/web"
@@ -519,7 +519,7 @@ func (process *TeleportProcess) initSSH() error {
 	eventsC := make(chan Event)
 	process.WaitForEvent(SSHIdentityEvent, eventsC, make(chan struct{}))
 
-	var s *srv.Server
+	var s *standard.Server
 
 	process.RegisterFunc(func() error {
 		event := <-eventsC
@@ -552,23 +552,23 @@ func (process *TeleportProcess) initSSH() error {
 			return trace.Wrap(err)
 		}
 
-		s, err = srv.New(cfg.SSH.Addr,
+		s, err = standard.New(cfg.SSH.Addr,
 			cfg.Hostname,
 			[]ssh.Signer{conn.Identity.KeySigner},
 			authClient,
 			cfg.DataDir,
 			cfg.AdvertiseIP,
 			cfg.Proxy.PublicAddr,
-			srv.SetLimiter(limiter),
-			srv.SetShell(cfg.SSH.Shell),
-			srv.SetAuditLog(conn.Client),
-			srv.SetSessionServer(conn.Client),
-			srv.SetLabels(cfg.SSH.Labels, cfg.SSH.CmdLabels),
-			srv.SetNamespace(namespace),
-			srv.SetPermitUserEnvironment(cfg.SSH.PermitUserEnvironment),
-			srv.SetCiphers(cfg.Ciphers),
-			srv.SetKEXAlgorithms(cfg.KEXAlgorithms),
-			srv.SetMACAlgorithms(cfg.MACAlgorithms),
+			standard.SetLimiter(limiter),
+			standard.SetShell(cfg.SSH.Shell),
+			standard.SetAuditLog(conn.Client),
+			standard.SetSessionServer(conn.Client),
+			standard.SetLabels(cfg.SSH.Labels, cfg.SSH.CmdLabels),
+			standard.SetNamespace(namespace),
+			standard.SetPermitUserEnvironment(cfg.SSH.PermitUserEnvironment),
+			standard.SetCiphers(cfg.Ciphers),
+			standard.SetKEXAlgorithms(cfg.KEXAlgorithms),
+			standard.SetMACAlgorithms(cfg.MACAlgorithms),
 		)
 		if err != nil {
 			return trace.Wrap(err)
@@ -723,20 +723,20 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 		return trace.Wrap(err)
 	}
 
-	SSHProxy, err := srv.New(cfg.Proxy.SSHAddr,
+	SSHProxy, err := standard.New(cfg.Proxy.SSHAddr,
 		cfg.Hostname,
 		[]ssh.Signer{conn.Identity.KeySigner},
 		authClient,
 		cfg.DataDir,
 		nil,
 		cfg.Proxy.PublicAddr,
-		srv.SetLimiter(proxyLimiter),
-		srv.SetProxyMode(tsrv),
-		srv.SetSessionServer(conn.Client),
-		srv.SetAuditLog(conn.Client),
-		srv.SetCiphers(cfg.Ciphers),
-		srv.SetKEXAlgorithms(cfg.KEXAlgorithms),
-		srv.SetMACAlgorithms(cfg.MACAlgorithms),
+		standard.SetLimiter(proxyLimiter),
+		standard.SetProxyMode(tsrv),
+		standard.SetSessionServer(conn.Client),
+		standard.SetAuditLog(conn.Client),
+		standard.SetCiphers(cfg.Ciphers),
+		standard.SetKEXAlgorithms(cfg.KEXAlgorithms),
+		standard.SetMACAlgorithms(cfg.MACAlgorithms),
 	)
 	if err != nil {
 		return trace.Wrap(err)
