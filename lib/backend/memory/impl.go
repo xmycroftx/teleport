@@ -34,14 +34,14 @@ type Backend struct {
 
 	clock clockwork.Clock
 
-	storeMu sync.Mutex
-	store   *ttlmap.TTLMap
+	storeMu sync.RWMutex
+	store   map[string]*ttlmap.TTLMap
 }
 
 // New creates a new instance of a in-memory backend, it conforms to the
 // backend.NewFunc interface.
 func New() (backend.Backend, error) {
-	ttlm, err := ttlmap.New(1000)
+	ttlm, err := ttlmap.New(1024)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -57,54 +57,59 @@ func New() (backend.Backend, error) {
 	return bk, nil
 }
 
-// GetKeys returns a list of keys for a given path
-func (bk *Backend) GetKeys(bucket []string) ([]string, error) {
+// GetKeys returns a list of keys for a given path.
+func (b *Backend) GetKeys(bucket []string) ([]string, error) {
+	b.storeMu.Lock()
+	defer b.storeMu.Unlock()
+
+	b.store[bucket]
+
 	return nil, nil
 }
 
 // CreateVal creates value with a given TTL and key in the bucket
 // if the value already exists, it must return trace.AlreadyExistsError
-func (bk *Backend) CreateVal(bucket []string, key string, val []byte, ttl time.Duration) error {
+func (b *Backend) CreateVal(bucket []string, key string, val []byte, ttl time.Duration) error {
 	return nil
 }
 
 // UpsertVal updates or inserts value with a given TTL into a bucket
 // ForeverTTL for no TTL
-func (bk *Backend) UpsertVal(bucket []string, key string, val []byte, ttl time.Duration) error {
+func (b *Backend) UpsertVal(bucket []string, key string, val []byte, ttl time.Duration) error {
 	return nil
 }
 
 // GetVal return a value for a given key in the bucket
-func (bk *Backend) GetVal(path []string, key string) ([]byte, error) {
+func (b *Backend) GetVal(path []string, key string) ([]byte, error) {
 	return nil, nil
 }
 
 // DeleteKey deletes a key in a bucket
-func (bk *Backend) DeleteKey(bucket []string, key string) error {
+func (b *Backend) DeleteKey(bucket []string, key string) error {
 	return nil
 }
 
 // DeleteBucket deletes the bucket by a given path
-func (bk *Backend) DeleteBucket(path []string, bkt string) error {
+func (b *Backend) DeleteBucket(path []string, bkt string) error {
 	return nil
 }
 
 // AcquireLock grabs a lock that will be released automatically in TTL
-func (bk *Backend) AcquireLock(token string, ttl time.Duration) error {
+func (b *Backend) AcquireLock(token string, ttl time.Duration) error {
 	return nil
 }
 
 // ReleaseLock forces lock release before TTL
-func (bk *Backend) ReleaseLock(token string) error {
+func (b *Backend) ReleaseLock(token string) error {
 	return nil
 }
 
 // Close releases the resources taken up by this backend
-func (bk *Backend) Close() error {
+func (b *Backend) Close() error {
 	return nil
 }
 
 // Clock returns clock used by this backend
-func (bk *Backend) Clock() clockwork.Clock {
+func (b *Backend) Clock() clockwork.Clock {
 	return nil
 }
