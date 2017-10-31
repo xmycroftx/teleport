@@ -12,7 +12,6 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
 */
 
 package state
@@ -29,32 +28,19 @@ import (
 	"github.com/gravitational/teleport/lib/services/local"
 
 	"github.com/gravitational/trace"
-	"github.com/jonboulle/clockwork"
-	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
-var (
-	accessPointRequests = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "access_point_requests",
-			Help: "Number of access point requests",
-		},
-	)
-)
-
-func init() {
-	// Metrics have to be registered to be exposed:
-	prometheus.MustRegister(accessPointRequests)
-}
-
-// CachingAuthClient implements auth.AccessPoint interface and remembers
+// cacheSecondaryClient implements auth.AccessPoint interface and remembers
 // the previously returned upstream value for each API call.
 //
-// This which can be used if the upstream AccessPoint goes offline
-type CachingAuthClient struct {
-	Config
+// This which can be used if the upstream AccessPoint goes offline.
+type cacheSecondaryClient struct {
 	*log.Entry
+
+	// Config is the configuration for cacheSecondaryClient.
+	Config
+
 	// ap points to the access point we're caching access to:
 	ap auth.AccessPoint
 
@@ -68,46 +54,11 @@ type CachingAuthClient struct {
 	config   services.ClusterConfiguration
 }
 
-// Config is CachingAuthClient config
-type Config struct {
-	// CacheTTL sets maximum TTL the cache keeps the value
-	CacheTTL time.Duration
-	// NeverExpires if set, never expires cache values
-	NeverExpires bool
-	// AccessPoint is access point for this
-	AccessPoint auth.AccessPoint
-	// Backend is cache backend
-	Backend backend.Backend
-	// Clock can be set to control time
-	Clock clockwork.Clock
-	// SkipPreload turns off preloading on start
-	SkipPreload bool
-}
-
-// CheckAndSetDefaults checks parameters and sets default values
-func (c *Config) CheckAndSetDefaults() error {
-	if !c.NeverExpires && c.CacheTTL == 0 {
-		c.CacheTTL = defaults.CacheTTL
-	}
-	if c.AccessPoint == nil {
-		return trace.BadParameter("missing AccessPoint parameter")
-	}
-	if c.Backend == nil {
-		return trace.BadParameter("missing Backend parameter")
-	}
-	if c.Clock == nil {
-		c.Clock = clockwork.NewRealClock()
-	}
-	return nil
-}
-
-// NewCachingAuthClient creates a new instance of CachingAuthClient using a
-// live connection to the auth server (ap)
-func NewCachingAuthClient(config Config) (*CachingAuthClient, error) {
-	if err := config.CheckAndSetDefaults(); err != nil {
-		return nil, trace.Wrap(err)
-	}
-	cs := &CachingAuthClient{
+// NewCacheSecondaryClient creates a new instance of auth.AccessPoint using a
+// live connection to the Auth Server. If connection to the Auth Server died
+// due to a connection problem, the cached value is used.
+func NewCacheSecondaryClient(config Config) (*cacheSecondaryClient, error) {
+	cs := &cacheSecondaryClient{
 		Config:   config,
 		ap:       config.AccessPoint,
 		identity: local.NewIdentityService(config.Backend),
@@ -131,7 +82,7 @@ func NewCachingAuthClient(config Config) (*CachingAuthClient, error) {
 	return cs, nil
 }
 
-func (cs *CachingAuthClient) fetchAll() error {
+func (cs *cacheSecondaryClient) fetchAll() error {
 	var errors []error
 	_, err := cs.GetDomainName()
 	errors = append(errors, err)
@@ -175,7 +126,7 @@ func (cs *CachingAuthClient) fetchAll() error {
 }
 
 // GetDomainName is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) GetDomainName() (clusterName string, err error) {
+func (cs *cacheSecondaryClient) GetDomainName() (clusterName string, err error) {
 	err = cs.try(func() error {
 		clusterName, err = cs.ap.GetDomainName()
 		return err
@@ -192,7 +143,7 @@ func (cs *CachingAuthClient) GetDomainName() (clusterName string, err error) {
 	return clusterName, err
 }
 
-func (cs *CachingAuthClient) GetClusterConfig() (clusterConfig services.ClusterConfig, err error) {
+func (cs *cacheSecondaryClient) GetClusterConfig() (clusterConfig services.ClusterConfig, err error) {
 	err = cs.try(func() error {
 		clusterConfig, err = cs.ap.GetClusterConfig()
 		return err
@@ -210,7 +161,7 @@ func (cs *CachingAuthClient) GetClusterConfig() (clusterConfig services.ClusterC
 }
 
 // GetRoles is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) GetRoles() (roles []services.Role, err error) {
+func (cs *cacheSecondaryClient) GetRoles() (roles []services.Role, err error) {
 	err = cs.try(func() error {
 		roles, err = cs.ap.GetRoles()
 		return err
@@ -234,7 +185,7 @@ func (cs *CachingAuthClient) GetRoles() (roles []services.Role, err error) {
 	return roles, err
 }
 
-func (cs *CachingAuthClient) setTTL(r services.Resource) {
+func (cs *cacheSecondaryClient) setTTL(r services.Resource) {
 	if cs.NeverExpires {
 		return
 	}
@@ -247,7 +198,7 @@ func (cs *CachingAuthClient) setTTL(r services.Resource) {
 }
 
 // GetRole is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) GetRole(name string) (role services.Role, err error) {
+func (cs *cacheSecondaryClient) GetRole(name string) (role services.Role, err error) {
 	err = cs.try(func() error {
 		role, err = cs.ap.GetRole(name)
 		return err
@@ -271,7 +222,7 @@ func (cs *CachingAuthClient) GetRole(name string) (role services.Role, err error
 }
 
 // GetNamespace returns namespace
-func (cs *CachingAuthClient) GetNamespace(name string) (namespace *services.Namespace, err error) {
+func (cs *cacheSecondaryClient) GetNamespace(name string) (namespace *services.Namespace, err error) {
 	err = cs.try(func() error {
 		namespace, err = cs.ap.GetNamespace(name)
 		return err
@@ -294,7 +245,7 @@ func (cs *CachingAuthClient) GetNamespace(name string) (namespace *services.Name
 }
 
 // GetNamespaces is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) GetNamespaces() (namespaces []services.Namespace, err error) {
+func (cs *cacheSecondaryClient) GetNamespaces() (namespaces []services.Namespace, err error) {
 	err = cs.try(func() error {
 		namespaces, err = cs.ap.GetNamespaces()
 		return err
@@ -320,7 +271,7 @@ func (cs *CachingAuthClient) GetNamespaces() (namespaces []services.Namespace, e
 }
 
 // GetNodes is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) GetNodes(namespace string) (nodes []services.Server, err error) {
+func (cs *cacheSecondaryClient) GetNodes(namespace string) (nodes []services.Server, err error) {
 	err = cs.try(func() error {
 		nodes, err = cs.ap.GetNodes(namespace)
 		return err
@@ -346,7 +297,7 @@ func (cs *CachingAuthClient) GetNodes(namespace string) (nodes []services.Server
 	return nodes, err
 }
 
-func (cs *CachingAuthClient) GetReverseTunnels() (tunnels []services.ReverseTunnel, err error) {
+func (cs *cacheSecondaryClient) GetReverseTunnels() (tunnels []services.ReverseTunnel, err error) {
 	err = cs.try(func() error {
 		tunnels, err = cs.ap.GetReverseTunnels()
 		return err
@@ -372,7 +323,7 @@ func (cs *CachingAuthClient) GetReverseTunnels() (tunnels []services.ReverseTunn
 }
 
 // GetProxies is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) GetProxies() (proxies []services.Server, err error) {
+func (cs *cacheSecondaryClient) GetProxies() (proxies []services.Server, err error) {
 	err = cs.try(func() error {
 		proxies, err = cs.ap.GetProxies()
 		return err
@@ -399,7 +350,7 @@ func (cs *CachingAuthClient) GetProxies() (proxies []services.Server, err error)
 }
 
 // GetCertAuthorities is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) GetCertAuthorities(ct services.CertAuthType, loadKeys bool) (cas []services.CertAuthority, err error) {
+func (cs *cacheSecondaryClient) GetCertAuthorities(ct services.CertAuthType, loadKeys bool) (cas []services.CertAuthority, err error) {
 	err = cs.try(func() error {
 		cas, err = cs.ap.GetCertAuthorities(ct, loadKeys)
 		return err
@@ -425,7 +376,7 @@ func (cs *CachingAuthClient) GetCertAuthorities(ct services.CertAuthType, loadKe
 }
 
 // GetUsers is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) GetUsers() (users []services.User, err error) {
+func (cs *cacheSecondaryClient) GetUsers() (users []services.User, err error) {
 	err = cs.try(func() error {
 		users, err = cs.ap.GetUsers()
 		return err
@@ -451,7 +402,7 @@ func (cs *CachingAuthClient) GetUsers() (users []services.User, err error) {
 }
 
 // GetTunnelConnections is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) GetTunnelConnections(clusterName string) (conns []services.TunnelConnection, err error) {
+func (cs *cacheSecondaryClient) GetTunnelConnections(clusterName string) (conns []services.TunnelConnection, err error) {
 	err = cs.try(func() error {
 		conns, err = cs.ap.GetTunnelConnections(clusterName)
 		return err
@@ -477,7 +428,7 @@ func (cs *CachingAuthClient) GetTunnelConnections(clusterName string) (conns []s
 }
 
 // GetAllTunnelConnections is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) GetAllTunnelConnections() (conns []services.TunnelConnection, err error) {
+func (cs *cacheSecondaryClient) GetAllTunnelConnections() (conns []services.TunnelConnection, err error) {
 	err = cs.try(func() error {
 		conns, err = cs.ap.GetAllTunnelConnections()
 		return err
@@ -503,32 +454,32 @@ func (cs *CachingAuthClient) GetAllTunnelConnections() (conns []services.TunnelC
 }
 
 // UpsertNode is part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) UpsertNode(s services.Server) error {
+func (cs *cacheSecondaryClient) UpsertNode(s services.Server) error {
 	cs.setTTL(s)
 	return cs.ap.UpsertNode(s)
 }
 
 // UpsertProxy is part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) UpsertProxy(s services.Server) error {
+func (cs *cacheSecondaryClient) UpsertProxy(s services.Server) error {
 	cs.setTTL(s)
 	return cs.ap.UpsertProxy(s)
 }
 
 // UpsertTunnelConnection is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) UpsertTunnelConnection(conn services.TunnelConnection) error {
+func (cs *cacheSecondaryClient) UpsertTunnelConnection(conn services.TunnelConnection) error {
 	cs.setTTL(conn)
 	return cs.ap.UpsertTunnelConnection(conn)
 }
 
 // DeleteTunnelConnection is a part of auth.AccessPoint implementation
-func (cs *CachingAuthClient) DeleteTunnelConnection(clusterName, connName string) error {
+func (cs *cacheSecondaryClient) DeleteTunnelConnection(clusterName, connName string) error {
 	return cs.ap.DeleteTunnelConnection(clusterName, connName)
 }
 
 // try calls a given function f and checks for errors. If f() fails, the current
 // time is recorded. Future calls to f will be ingored until sufficient time passes
 // since th last error
-func (cs *CachingAuthClient) try(f func() error) error {
+func (cs *cacheSecondaryClient) try(f func() error) error {
 	tooSoon := cs.lastErrorTime.Add(defaults.NetworkRetryDuration).After(time.Now())
 	if tooSoon {
 		cs.Warnf("backoff: using cached value due to recent errors")

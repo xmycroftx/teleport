@@ -12,7 +12,6 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
 */
 
 package state
@@ -174,7 +173,7 @@ func (s *ClusterSnapshotSuite) TearDownTest(c *check.C) {
 func (s *ClusterSnapshotSuite) TestEverything(c *check.C) {
 	cacheBackend, err := dir.New(backend.Params{"path": c.MkDir()})
 	c.Assert(err, check.IsNil)
-	snap, err := NewCachingAuthClient(Config{
+	snap, err := NewCacheSecondaryClient(Config{
 		AccessPoint: s.authServer,
 		Clock:       s.clock,
 		Backend:     cacheBackend,
@@ -212,7 +211,7 @@ func (s *ClusterSnapshotSuite) TestTry(c *check.C) {
 
 	cacheBackend, err := dir.New(backend.Params{"path": c.MkDir()})
 	c.Assert(err, check.IsNil)
-	ap, err := NewCachingAuthClient(Config{
+	ap, err := NewCacheSecondaryClient(Config{
 		AccessPoint: s.authServer,
 		Clock:       s.clock,
 		Backend:     cacheBackend,
