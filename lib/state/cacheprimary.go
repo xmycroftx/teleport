@@ -141,7 +141,7 @@ func (cs *cachePrimaryClient) fetchAll() error {
 //}
 
 func (cs *cachePrimaryClient) GetClusterConfig() (clusterConfig services.ClusterConfig, err error) {
-	clusterConfig, err = cs.ap.GetClusterConfig()
+	clusterConfig, err = cs.config.GetClusterConfig()
 	if err != nil {
 		err = cs.try(func() error {
 			clusterConfig, err = cs.ap.GetClusterConfig()

@@ -8,6 +8,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth/testauthority"
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/backend/boltbk"
+	"github.com/gravitational/teleport/lib/backend/dir"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/utils"
@@ -55,9 +56,20 @@ func (s *CachePrimarySuite) SetUpTest(c *check.C) {
 		ClusterName:  clusterName,
 		StaticTokens: staticTokens,
 	})
+
+	// set cluster level configuration
+	clusterConfig, err := services.NewClusterConfig(services.ClusterConfigSpecV3{
+		SessionRecording: services.RecordAtProxy,
+	})
+	c.Assert(err, check.IsNil)
+	err = s.authServer.SetClusterConfig(clusterConfig)
+	c.Assert(err, check.IsNil)
+
+	// set the namespace for cluster
 	err = s.authServer.UpsertNamespace(
 		services.NewNamespace(defaults.Namespace))
 	c.Assert(err, check.IsNil)
+
 	// add some nodes to it:
 	for _, n := range Nodes {
 		v2 := n.V2()
@@ -92,5 +104,36 @@ func (s *CachePrimarySuite) TearDownTest(c *check.C) {
 	os.RemoveAll(s.dataDir)
 }
 
+func (s *CachePrimarySuite) TestFetchAll(c *check.C) {
+}
+
 func (s *CachePrimarySuite) TestCycle(c *check.C) {
+	cacheBackend, err := dir.New(backend.Params{"path": c.MkDir()})
+	c.Assert(err, check.IsNil)
+
+	cachePrimary, err := NewCachePrimaryClient(Config{
+		AccessPoint: s.authServer,
+		Clock:       s.clock,
+		Backend:     cacheBackend,
+	})
+	c.Assert(err, check.IsNil)
+	c.Assert(cachePrimary, check.NotNil)
+
+	// look in the cache first, we shouldn't have anything
+	_, err = cachePrimary.config.GetClusterConfig()
+	c.Assert(err, check.NotNil)
+
+	// check in the primary cache. it should miss and then fetch it from the auth server.
+	clusterConfig, err := cachePrimary.GetClusterConfig()
+	c.Assert(err, check.IsNil)
+	c.Assert(clusterConfig, check.NotNil)
+	c.Assert(clusterConfig.GetSessionRecording(), check.Equals, services.RecordAtProxy)
+
+	// now forward time, make sure we've expired the value in the cache
+
+	// try getting it again, make sure it's been updated
+
+	//// kill the 'upstream' server:
+	//s.authServer.Close()
+
 }
