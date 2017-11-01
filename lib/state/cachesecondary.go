@@ -76,7 +76,7 @@ func NewCacheSecondaryClient(config Config) (*cacheSecondaryClient, error) {
 			// we almost always get some "access denied" errors here because
 			// not all cacheable resources are available (for example nodes do
 			// not have access to tunnels)
-			cs.Debugf("auth cache: %v", err)
+			cs.Debugf("auth cache (secondary): %v", err)
 		}
 	}
 	return cs, nil
