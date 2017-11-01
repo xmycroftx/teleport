@@ -113,6 +113,7 @@ func (cfg *Config) Validate() error {
 	return nil
 }
 
+// Clock returns clock assigned to the backend
 func (b *bk) Clock() clockwork.Clock {
 	return b.clock
 }

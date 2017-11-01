@@ -62,6 +62,7 @@ type Backend struct {
 	*log.Entry
 }
 
+// Clock returns clock assigned to the backend
 func (b *Backend) Clock() clockwork.Clock {
 	return b.InternalClock
 }

@@ -55,7 +55,12 @@ func (s *ClusterConfigurationService) SetClusterName(c services.ClusterName) err
 		return trace.Wrap(err)
 	}
 
-	err = s.CreateVal([]string{"cluster_configuration"}, "name", []byte(data), backend.Forever)
+	ttl := c.Expiry().Sub(s.Backend.Clock().Now())
+	if ttl.Seconds() < 0 {
+		ttl = backend.Forever
+	}
+
+	err = s.CreateVal([]string{"cluster_configuration"}, "name", []byte(data), ttl)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -141,7 +146,12 @@ func (s *ClusterConfigurationService) SetClusterConfig(c services.ClusterConfig)
 		return trace.Wrap(err)
 	}
 
-	err = s.UpsertVal([]string{"cluster_configuration"}, "general", []byte(data), backend.Forever)
+	ttl := c.Expiry().Sub(s.Backend.Clock().Now())
+	if ttl.Seconds() < 0 {
+		ttl = backend.Forever
+	}
+
+	err = s.UpsertVal([]string{"cluster_configuration"}, "general", []byte(data), ttl)
 	if err != nil {
 		return trace.Wrap(err)
 	}

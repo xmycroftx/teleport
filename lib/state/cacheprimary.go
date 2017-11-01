@@ -22,6 +22,7 @@ import (
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/services/local"
@@ -79,66 +80,77 @@ func NewCachePrimaryClient(config Config) (*cachePrimaryClient, error) {
 }
 
 func (cs *cachePrimaryClient) fetchAll() error {
-	return nil
-	//	var errors []error
-	//	_, err := cs.GetDomainName()
-	//	errors = append(errors, err)
-	//	_, err = cs.GetClusterConfig()
-	//	errors = append(errors, err)
-	//	_, err = cs.GetRoles()
-	//	errors = append(errors, err)
-	//	namespaces, err := cs.GetNamespaces()
-	//	errors = append(errors, err)
-	//	if err == nil {
-	//		for _, ns := range namespaces {
-	//			_, err = cs.GetNodes(ns.Metadata.Name)
-	//			errors = append(errors, err)
-	//		}
-	//	}
-	//	_, err = cs.GetProxies()
-	//	errors = append(errors, err)
-	//	_, err = cs.GetReverseTunnels()
-	//	errors = append(errors, err)
-	//	_, err = cs.GetCertAuthorities(services.UserCA, false)
-	//	errors = append(errors, err)
-	//	_, err = cs.GetCertAuthorities(services.HostCA, false)
-	//	errors = append(errors, err)
-	//	_, err = cs.GetUsers()
-	//	errors = append(errors, err)
-	//	conns, err := cs.ap.GetAllTunnelConnections()
-	//	if err != nil {
-	//		errors = append(errors, err)
-	//	}
-	//	clusters := map[string]bool{}
-	//	for _, conn := range conns {
-	//		clusterName := conn.GetClusterName()
-	//		if _, ok := clusters[clusterName]; ok {
-	//			continue
-	//		}
-	//		clusters[clusterName] = true
-	//		_, err = cs.GetTunnelConnections(clusterName)
-	//		errors = append(errors, err)
-	//	}
-	//	return trace.NewAggregate(errors...)
+	var errors []error
+	_, err := cs.GetDomainName()
+	errors = append(errors, err)
+	_, err = cs.GetClusterConfig()
+	errors = append(errors, err)
+	_, err = cs.GetRoles()
+	errors = append(errors, err)
+	namespaces, err := cs.GetNamespaces()
+	errors = append(errors, err)
+	if err == nil {
+		for _, ns := range namespaces {
+			_, err = cs.GetNodes(ns.Metadata.Name)
+			errors = append(errors, err)
+		}
+	}
+	_, err = cs.GetProxies()
+	errors = append(errors, err)
+	_, err = cs.GetReverseTunnels()
+	errors = append(errors, err)
+	_, err = cs.GetCertAuthorities(services.UserCA, false)
+	errors = append(errors, err)
+	_, err = cs.GetCertAuthorities(services.HostCA, false)
+	errors = append(errors, err)
+	_, err = cs.GetUsers()
+	errors = append(errors, err)
+	conns, err := cs.ap.GetAllTunnelConnections()
+	if err != nil {
+		errors = append(errors, err)
+	}
+	clusters := map[string]bool{}
+	for _, conn := range conns {
+		clusterName := conn.GetClusterName()
+		if _, ok := clusters[clusterName]; ok {
+			continue
+		}
+		clusters[clusterName] = true
+		_, err = cs.GetTunnelConnections(clusterName)
+		errors = append(errors, err)
+	}
+	return trace.NewAggregate(errors...)
 }
 
-//// GetDomainName is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) GetDomainName() (clusterName string, err error) {
-//	err = cs.try(func() error {
-//		clusterName, err = cs.ap.GetDomainName()
-//		return err
-//	})
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.presence.GetLocalClusterName()
-//		}
-//		return clusterName, err
-//	}
-//	if err = cs.presence.UpsertLocalClusterName(clusterName); err != nil {
-//		return "", trace.Wrap(err)
-//	}
-//	return clusterName, err
-//}
+// GetDomainName is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) GetDomainName() (string, error) {
+	var domainName string
+	var err error
+
+	clusterName, err := cs.config.GetClusterName()
+	if err != nil {
+		err = cs.try(func() error {
+			domainName, err = cs.ap.GetDomainName()
+			return err
+		})
+		if err != nil {
+			return "", trace.Wrap(err)
+		}
+
+		// set ttl and upsert resource. we do this so we periodically purge cache
+		// to keep values in cache fresh.
+		clusterName, err = services.NewClusterName(services.ClusterNameSpecV2{
+			ClusterName: domainName,
+		})
+		cs.setTTL(clusterName)
+		err = cs.config.SetClusterName(clusterName)
+		if err != nil {
+			return "", trace.Wrap(err)
+		}
+	}
+
+	return clusterName.GetClusterName(), nil
+}
 
 func (cs *cachePrimaryClient) GetClusterConfig() (clusterConfig services.ClusterConfig, err error) {
 	clusterConfig, err = cs.config.GetClusterConfig()
@@ -151,7 +163,8 @@ func (cs *cachePrimaryClient) GetClusterConfig() (clusterConfig services.Cluster
 			return nil, trace.Wrap(err)
 		}
 
-		// set ttl upsert resource. we do this so we periodically update cache.
+		// set ttl and upsert resource. we do this so we periodically purge cache
+		// to keep values in cache fresh.
 		cs.setTTL(clusterConfig)
 		err = cs.config.SetClusterConfig(clusterConfig)
 		if err != nil {
@@ -160,326 +173,328 @@ func (cs *cachePrimaryClient) GetClusterConfig() (clusterConfig services.Cluster
 	}
 
 	return clusterConfig, nil
-
-	//err = cs.try(func() error {
-	//	clusterConfig, err = cs.ap.GetClusterConfig()
-	//	return err
-	//})
-	//if err != nil {
-	//	if trace.IsConnectionProblem(err) {
-	//		return cs.config.GetClusterConfig()
-	//	}
-	//	return nil, trace.Wrap(err)
-	//}
-	//if err = cs.config.SetClusterConfig(clusterConfig); err != nil {
-	//	return nil, trace.Wrap(err)
-	//}
-	//return clusterConfig, nil
 }
 
-//// GetRoles is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) GetRoles() (roles []services.Role, err error) {
-//	err = cs.try(func() error {
-//		roles, err = cs.ap.GetRoles()
-//		return err
-//	})
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.access.GetRoles()
-//		}
-//		return roles, err
-//	}
-//	if err := cs.access.DeleteAllRoles(); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	for _, role := range roles {
-//		if err := cs.access.UpsertRole(role, backend.Forever); err != nil {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	return roles, err
-//}
-//
-//// GetRole is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) GetRole(name string) (role services.Role, err error) {
-//	err = cs.try(func() error {
-//		role, err = cs.ap.GetRole(name)
-//		return err
-//	})
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.access.GetRole(name)
-//		}
-//		return role, err
-//	}
-//	if err := cs.access.DeleteRole(name); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	cs.setTTL(role)
-//	if err := cs.access.UpsertRole(role, backend.Forever); err != nil {
-//		return nil, trace.Wrap(err)
-//	}
-//	return role, nil
-//}
-//
-//// GetNamespace returns namespace
-//func (cs *cachePrimaryClient) GetNamespace(name string) (namespace *services.Namespace, err error) {
-//	err = cs.try(func() error {
-//		namespace, err = cs.ap.GetNamespace(name)
-//		return err
-//	})
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.presence.GetNamespace(name)
-//		}
-//		return namespace, err
-//	}
-//	if err := cs.presence.DeleteNamespace(name); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	if err := cs.presence.UpsertNamespace(*namespace); err != nil {
-//		return nil, trace.Wrap(err)
-//	}
-//	return namespace, err
-//}
-//
-//// GetNamespaces is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) GetNamespaces() (namespaces []services.Namespace, err error) {
-//	err = cs.try(func() error {
-//		namespaces, err = cs.ap.GetNamespaces()
-//		return err
-//	})
-//
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.presence.GetNamespaces()
-//		}
-//		return namespaces, err
-//	}
-//	if err := cs.presence.DeleteAllNamespaces(); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	for _, ns := range namespaces {
-//		if err := cs.presence.UpsertNamespace(ns); err != nil {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	return namespaces, err
-//}
-//
-//// GetNodes is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) GetNodes(namespace string) (nodes []services.Server, err error) {
-//	err = cs.try(func() error {
-//		nodes, err = cs.ap.GetNodes(namespace)
-//		return err
-//
-//	})
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.presence.GetNodes(namespace)
-//		}
-//		return nodes, err
-//	}
-//	if err := cs.presence.DeleteAllNodes(namespace); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	for _, node := range nodes {
-//		cs.setTTL(node)
-//		if err := cs.presence.UpsertNode(node); err != nil {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	return nodes, err
-//}
-//
-//func (cs *cachePrimaryClient) GetReverseTunnels() (tunnels []services.ReverseTunnel, err error) {
-//	err = cs.try(func() error {
-//		tunnels, err = cs.ap.GetReverseTunnels()
-//		return err
-//	})
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.presence.GetReverseTunnels()
-//		}
-//		return tunnels, err
-//	}
-//	if err := cs.presence.DeleteAllReverseTunnels(); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	for _, tunnel := range tunnels {
-//		cs.setTTL(tunnel)
-//		if err := cs.presence.UpsertReverseTunnel(tunnel); err != nil {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	return tunnels, err
-//}
-//
-//// GetProxies is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) GetProxies() (proxies []services.Server, err error) {
-//	err = cs.try(func() error {
-//		proxies, err = cs.ap.GetProxies()
-//		return err
-//	})
-//
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.presence.GetProxies()
-//		}
-//		return proxies, err
-//	}
-//	if err := cs.presence.DeleteAllProxies(); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	for _, proxy := range proxies {
-//		cs.setTTL(proxy)
-//		if err := cs.presence.UpsertProxy(proxy); err != nil {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	return proxies, err
-//}
-//
-//// GetCertAuthorities is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) GetCertAuthorities(ct services.CertAuthType, loadKeys bool) (cas []services.CertAuthority, err error) {
-//	err = cs.try(func() error {
-//		cas, err = cs.ap.GetCertAuthorities(ct, loadKeys)
-//		return err
-//	})
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.trust.GetCertAuthorities(ct, loadKeys)
-//		}
-//		return cas, err
-//	}
-//	if err := cs.trust.DeleteAllCertAuthorities(ct); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	for _, ca := range cas {
-//		cs.setTTL(ca)
-//		if err := cs.trust.UpsertCertAuthority(ca); err != nil {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	return cas, err
-//}
-//
-//// GetUsers is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) GetUsers() (users []services.User, err error) {
-//	err = cs.try(func() error {
-//		users, err = cs.ap.GetUsers()
-//		return err
-//	})
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.identity.GetUsers()
-//		}
-//		return users, err
-//	}
-//	if err := cs.identity.DeleteAllUsers(); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	for _, user := range users {
-//		cs.setTTL(user)
-//		if err := cs.identity.UpsertUser(user); err != nil {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	return users, err
-//}
-//
-//// GetTunnelConnections is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) GetTunnelConnections(clusterName string) (conns []services.TunnelConnection, err error) {
-//	err = cs.try(func() error {
-//		conns, err = cs.ap.GetTunnelConnections(clusterName)
-//		return err
-//	})
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.presence.GetTunnelConnections(clusterName)
-//		}
-//		return conns, err
-//	}
-//	if err := cs.presence.DeleteTunnelConnections(clusterName); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	for _, conn := range conns {
-//		cs.setTTL(conn)
-//		if err := cs.presence.UpsertTunnelConnection(conn); err != nil {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	return conns, err
-//}
-//
-//// GetAllTunnelConnections is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) GetAllTunnelConnections() (conns []services.TunnelConnection, err error) {
-//	err = cs.try(func() error {
-//		conns, err = cs.ap.GetAllTunnelConnections()
-//		return err
-//	})
-//	if err != nil {
-//		if trace.IsConnectionProblem(err) {
-//			return cs.presence.GetAllTunnelConnections()
-//		}
-//		return conns, err
-//	}
-//	if err := cs.presence.DeleteAllTunnelConnections(); err != nil {
-//		if !trace.IsNotFound(err) {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	for _, conn := range conns {
-//		cs.setTTL(conn)
-//		if err := cs.presence.UpsertTunnelConnection(conn); err != nil {
-//			return nil, trace.Wrap(err)
-//		}
-//	}
-//	return conns, err
-//}
-//
-//// UpsertNode is part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) UpsertNode(s services.Server) error {
-//	cs.setTTL(s)
-//	return cs.ap.UpsertNode(s)
-//}
-//
-//// UpsertProxy is part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) UpsertProxy(s services.Server) error {
-//	cs.setTTL(s)
-//	return cs.ap.UpsertProxy(s)
-//}
-//
-//// UpsertTunnelConnection is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) UpsertTunnelConnection(conn services.TunnelConnection) error {
-//	cs.setTTL(conn)
-//	return cs.ap.UpsertTunnelConnection(conn)
-//}
-//
-//// DeleteTunnelConnection is a part of auth.AccessPoint implementation
-//func (cs *cachePrimaryClient) DeleteTunnelConnection(clusterName, connName string) error {
-//	return cs.ap.DeleteTunnelConnection(clusterName, connName)
-//}
+// GetRoles is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) GetRoles() (roles []services.Role, err error) {
+	roles, err = cs.access.GetRoles()
+	if err != nil {
+		err = cs.try(func() error {
+			roles, err = cs.ap.GetRoles()
+			return err
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := cs.access.DeleteAllRoles(); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		for _, role := range roles {
+			cs.setTTL(role)
+			if err := cs.access.UpsertRole(role, backend.Forever); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+	}
+
+	return roles, err
+}
+
+// GetRole is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) GetRole(name string) (role services.Role, err error) {
+	role, err = cs.access.GetRole(name)
+	if err != nil {
+		err = cs.try(func() error {
+			role, err = cs.ap.GetRole(name)
+			return err
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := cs.access.DeleteRole(name); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		cs.setTTL(role)
+		if err := cs.access.UpsertRole(role, backend.Forever); err != nil {
+			return nil, trace.Wrap(err)
+		}
+	}
+
+	return role, nil
+}
+
+// GetNamespace returns namespace
+func (cs *cachePrimaryClient) GetNamespace(name string) (namespace *services.Namespace, err error) {
+	namespace, err = cs.presence.GetNamespace(name)
+	if err != nil {
+		err = cs.try(func() error {
+			namespace, err = cs.ap.GetNamespace(name)
+			return err
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := cs.presence.DeleteNamespace(name); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		if err := cs.presence.UpsertNamespace(*namespace); err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+	}
+	return namespace, err
+}
+
+// GetNamespaces is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) GetNamespaces() (namespaces []services.Namespace, err error) {
+	namespaces, err = cs.presence.GetNamespaces()
+	if err != nil {
+		err = cs.try(func() error {
+			namespaces, err = cs.ap.GetNamespaces()
+			return err
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := cs.presence.DeleteAllNamespaces(); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		for _, ns := range namespaces {
+			if err := cs.presence.UpsertNamespace(ns); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+	}
+
+	return namespaces, err
+}
+
+// GetNodes is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) GetNodes(namespace string) (nodes []services.Server, err error) {
+	nodes, err = cs.presence.GetNodes(namespace)
+	if err != nil {
+		err = cs.try(func() error {
+			nodes, err = cs.ap.GetNodes(namespace)
+			return err
+
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		if err := cs.presence.DeleteAllNodes(namespace); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		for _, node := range nodes {
+			cs.setTTL(node)
+			if err := cs.presence.UpsertNode(node); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+	}
+
+	return nodes, err
+}
+
+func (cs *cachePrimaryClient) GetReverseTunnels() (tunnels []services.ReverseTunnel, err error) {
+	tunnels, err = cs.presence.GetReverseTunnels()
+	if err != nil {
+		err = cs.try(func() error {
+			tunnels, err = cs.ap.GetReverseTunnels()
+			return err
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := cs.presence.DeleteAllReverseTunnels(); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		for _, tunnel := range tunnels {
+			cs.setTTL(tunnel)
+			if err := cs.presence.UpsertReverseTunnel(tunnel); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+	}
+
+	return tunnels, err
+}
+
+// GetProxies is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) GetProxies() (proxies []services.Server, err error) {
+	proxies, err = cs.presence.GetProxies()
+	if err != nil {
+		err = cs.try(func() error {
+			proxies, err = cs.ap.GetProxies()
+			return err
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := cs.presence.DeleteAllProxies(); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		for _, proxy := range proxies {
+			cs.setTTL(proxy)
+			if err := cs.presence.UpsertProxy(proxy); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+	}
+
+	return proxies, err
+}
+
+// GetCertAuthorities is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) GetCertAuthorities(ct services.CertAuthType, loadKeys bool) (cas []services.CertAuthority, err error) {
+	cas, err = cs.trust.GetCertAuthorities(ct, loadKeys)
+	if err != nil {
+		err = cs.try(func() error {
+			cas, err = cs.ap.GetCertAuthorities(ct, loadKeys)
+			return err
+		})
+		if err != nil {
+			return cas, trace.Wrap(err)
+		}
+
+		if err := cs.trust.DeleteAllCertAuthorities(ct); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		for _, ca := range cas {
+			cs.setTTL(ca)
+			if err := cs.trust.UpsertCertAuthority(ca); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+	}
+	return cas, err
+}
+
+// GetUsers is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) GetUsers() (users []services.User, err error) {
+	users, err = cs.identity.GetUsers()
+	if err != nil {
+		err = cs.try(func() error {
+			users, err = cs.ap.GetUsers()
+			return err
+		})
+		if err != nil {
+			return users, trace.Wrap(err)
+		}
+
+		if err := cs.identity.DeleteAllUsers(); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		for _, user := range users {
+			cs.setTTL(user)
+			if err := cs.identity.UpsertUser(user); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+	}
+	return users, err
+}
+
+// GetTunnelConnections is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) GetTunnelConnections(clusterName string) (conns []services.TunnelConnection, err error) {
+	conns, err = cs.presence.GetTunnelConnections(clusterName)
+	if err != nil {
+		err = cs.try(func() error {
+			conns, err = cs.ap.GetTunnelConnections(clusterName)
+			return err
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := cs.presence.DeleteTunnelConnections(clusterName); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		for _, conn := range conns {
+			cs.setTTL(conn)
+			if err := cs.presence.UpsertTunnelConnection(conn); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+	}
+
+	return conns, err
+}
+
+// GetAllTunnelConnections is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) GetAllTunnelConnections() (conns []services.TunnelConnection, err error) {
+	conns, err = cs.presence.GetAllTunnelConnections()
+	if err != nil {
+		err = cs.try(func() error {
+			conns, err = cs.ap.GetAllTunnelConnections()
+			return err
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+
+		if err := cs.presence.DeleteAllTunnelConnections(); err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+		}
+		for _, conn := range conns {
+			cs.setTTL(conn)
+			if err := cs.presence.UpsertTunnelConnection(conn); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+	}
+	return conns, err
+}
+
+// UpsertNode is part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) UpsertNode(s services.Server) error {
+	cs.setTTL(s)
+	return cs.presence.UpsertNode(s)
+}
+
+// UpsertProxy is part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) UpsertProxy(s services.Server) error {
+	cs.setTTL(s)
+	return cs.presence.UpsertProxy(s)
+}
+
+// UpsertTunnelConnection is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) UpsertTunnelConnection(conn services.TunnelConnection) error {
+	cs.setTTL(conn)
+	return cs.presence.UpsertTunnelConnection(conn)
+}
+
+// DeleteTunnelConnection is a part of auth.AccessPoint implementation
+func (cs *cachePrimaryClient) DeleteTunnelConnection(clusterName, connName string) error {
+	return cs.presence.DeleteTunnelConnection(clusterName, connName)
+}
 
 // try calls a given function f and checks for errors. If f() fails, the current
 // time is recorded. Future calls to f will be ingored until sufficient time passes
@@ -494,11 +509,12 @@ func (cs *cachePrimaryClient) try(f func() error) error {
 	err := trace.ConvertSystemError(f())
 	if trace.IsConnectionProblem(err) {
 		cs.lastErrorTime = time.Now()
-		cs.Warningf("connection problem: failed connect to the auth servers, using local cache")
+		cs.Warningf("connection problem: failed connect to the auth servers, using local cache: %v", err)
 	}
 	return err
 }
 
+// setTTL will set the TTL on the metadata allowing resource to expire.
 func (cs *cachePrimaryClient) setTTL(r services.Resource) {
 	if cs.NeverExpires {
 		return
