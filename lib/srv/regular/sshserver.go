@@ -14,9 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package srv implements SSH server that supports multiplexing
-// tunneling, SSH connections proxying and only supports Key based auth
-package srv
+package regular
 
 import (
 	"fmt"
