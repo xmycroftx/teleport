@@ -16,24 +16,25 @@ limitations under the License.
 
 package srv
 
-import (
-	"golang.org/x/crypto/ssh"
-)
+// Terminal defines an interface of functions for managing a (local or remote)
+// PTY such as: executing commands within a PTY, resizing windows, and
+// cleaning up.
+type Terminal interface {
+	// AddParty adds another participant to this terminal. We will keep the
+	// Terminal open until all participants have left.
+	AddParty(delta int)
 
-// TODO(russjones)
-type Exec interface {
-	GetCmd() string
-	SetCmd(string)
-	Start(ch ssh.Channel) (*ExecResult, error)
+	Run() error
 	Wait() (*ExecResult, error)
-}
+	Kill() error
 
-// execResult is used internally to send the result of a command execution from
-// a goroutine to SSH request handler and back to the calling client
-type ExecResult struct {
-	// Command is the command that was executed.
-	Command string
+	PTY() io.ReadWriter
+	TTY() *os.File
 
-	// Code is return code that execution of the command resulted in.
-	Code int
+	Close() error
+
+	GetWinSize() (*term.Winsize, error)
+	SetWinSize(params rsession.TerminalParams) error
+	GetTerminalParams() rsession.TerminalParams
+	SetTermType(string)
 }

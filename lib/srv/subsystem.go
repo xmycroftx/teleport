@@ -16,24 +16,7 @@ limitations under the License.
 
 package srv
 
-import (
-	"golang.org/x/crypto/ssh"
-)
-
-// TODO(russjones)
-type Exec interface {
-	GetCmd() string
-	SetCmd(string)
-	Start(ch ssh.Channel) (*ExecResult, error)
-	Wait() (*ExecResult, error)
-}
-
-// execResult is used internally to send the result of a command execution from
-// a goroutine to SSH request handler and back to the calling client
-type ExecResult struct {
-	// Command is the command that was executed.
-	Command string
-
-	// Code is return code that execution of the command resulted in.
-	Code int
+// SubsystemResult holds the result of execution of a subsystem.
+type SubsystemResult struct {
+	err error
 }
