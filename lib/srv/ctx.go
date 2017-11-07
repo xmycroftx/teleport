@@ -28,6 +28,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/session"
+	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
 
 	"github.com/gravitational/trace"
@@ -155,6 +156,37 @@ func NewSessionContext(serverContext *ServerContext) *SessionContext {
 	})
 
 	return sessionContext
+}
+
+func (c *SessionContext) JoinOrCreateSession(reg *SessionRegistry) error {
+	// As SSH conversation progresses, at some point a session will be created and
+	// its ID will be added to the environment
+	ssid, found := c.Environment[sshutils.SessionEnvVar]
+	if !found {
+		return nil
+	}
+	// make sure whatever session is requested is a valid session
+	_, err := session.ParseID(ssid)
+	if err != nil {
+		return trace.BadParameter("invalid session id")
+	}
+
+	findSession := func() (*activeSession, bool) {
+		reg.Lock()
+		defer reg.Unlock()
+
+		return reg.findSession(session.ID(ssid))
+	}
+
+	// update ctx with a session ID
+	c.activeSession, _ = findSession()
+	if c.activeSession == nil {
+		log.Debugf("[SSH] will create new session for SSH connection %v", c.ServerConn.RemoteAddr())
+	} else {
+		log.Debugf("[SSH] will join session %v for SSH connection %v", c.activeSession, c.ServerConn.RemoteAddr())
+	}
+
+	return nil
 }
 
 // EmitAuditEvent logs a given event to the audit log attached to the server

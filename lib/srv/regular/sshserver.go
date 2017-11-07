@@ -776,10 +776,12 @@ func (s *Server) HandleNewChan(nc net.Conn, sconn *ssh.ServerConn, nch ssh.NewCh
 
 // handleDirectTCPIPRequest does the port forwarding
 func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel, req *sshutils.DirectTCPIPReq) {
-	// ctx holds the connection context and keeps track of the associated resources
-	ctx := newCtx(s, sconn)
-	ctx.isTestStub = s.isTestStub
-	ctx.addCloser(ch)
+	// ctx holds the session context and is useful to keep track of (and free
+	// resources) used during a session.
+	ctx := srv.NewSessionContext(s.serverContext(sconn))
+
+	ctx.IsTestStub = s.isTestStub
+	ctx.AddCloser(ch)
 	defer ctx.Debugf("direct-tcp closed")
 	defer ctx.Close()
 
@@ -792,9 +794,9 @@ func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel,
 	}
 	defer conn.Close()
 	// audit event:
-	s.EmitAuditEvent(events.PortForwardEvent, events.EventFields{
+	ctx.EmitAuditEvent(events.PortForwardEvent, events.EventFields{
 		events.PortForwardAddr: addr,
-		events.EventLogin:      ctx.login,
+		events.EventLogin:      ctx.SystemLogin,
 		events.LocalAddr:       sconn.LocalAddr().String(),
 		events.RemoteAddr:      sconn.RemoteAddr().String(),
 	})
@@ -822,62 +824,27 @@ func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, ch ssh.Channel,
 // this is the only way to make web-based terminal UI not break apart
 // when window changes its size
 func (s *Server) handleTerminalResize(sconn *ssh.ServerConn, ch ssh.Channel) {
-	// the party may not be immediately available for this connection,
-	// keep asking for a full second:
-	for i := 0; i < 10; i++ {
-		party := s.reg.PartyForConnection(sconn)
-		if party == nil {
-			time.Sleep(time.Millisecond * 100)
-			continue
-		}
-		// this starts a loop which will keep updating the terminal
-		// size for every SSH write back to this connection
-		party.termSizePusher(ch)
-		return
+	err := s.reg.PushTermSizeToParty(sconn, ch)
+	if err != nil {
+		log.Warnf("Unable to push terminal size to party: %v", err)
 	}
 }
 
 // handleSessionRequests handles out of band session requests once the session channel has been created
 // this function's loop handles all the "exec", "subsystem" and "shell" requests.
 func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in <-chan *ssh.Request) {
-	// ctx holds the connection context and keeps track of the associated resources
-	ctx := newCtx(s, sconn)
-	ctx.isTestStub = s.isTestStub
-	ctx.addCloser(ch)
+	// ctx holds the session context and is useful to keep track of (and free
+	// resources) used during a session.
+	ctx := srv.NewSessionContext(s.serverContext(sconn))
+
+	ctx.IsTestStub = s.isTestStub
+	ctx.AddCloser(ch)
 	defer ctx.Close()
-
-	// As SSH conversation progresses, at some point a session will be created and
-	// its ID will be added to the environment
-	updateContext := func() error {
-		ssid, found := ctx.getEnv(sshutils.SessionEnvVar)
-		if !found {
-			return nil
-		}
-		// make sure whatever session is requested is a valid session
-		_, err := rsession.ParseID(ssid)
-		if err != nil {
-			return trace.BadParameter("invalid session id")
-		}
-		findSession := func() (*session, bool) {
-			s.reg.Lock()
-			defer s.reg.Unlock()
-			return s.reg.findSession(rsession.ID(ssid))
-		}
-		// update ctx with a session ID
-		ctx.session, _ = findSession()
-		if ctx.session == nil {
-			log.Debugf("[SSH] will create new session for SSH connection %v", sconn.RemoteAddr())
-		} else {
-			log.Debugf("[SSH] will join session %v for SSH connection %v", ctx.session, sconn.RemoteAddr())
-		}
-
-		return nil
-	}
 
 	for {
 		// update ctx with the session ID:
 		if !s.proxyMode {
-			err := updateContext()
+			err := ctx.JoinOrCreateSession(s.reg)
 			if err != nil {
 				errorMessage := fmt.Sprintf("unable to update context: %v", err)
 				ctx.Errorf("[SSH] %v", errorMessage)
@@ -892,7 +859,7 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 			}
 		}
 		select {
-		case creq := <-ctx.subsystemResultC:
+		case creq := <-ctx.SubsystemResultCh:
 			// this means that subsystem has finished executing and
 			// want us to close session and the channel
 			ctx.Debugf("[SSH] close session request: %v", creq.err)
@@ -925,7 +892,7 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 
 // dispatch receives an SSH request for a subsystem and disptaches the request to the
 // appropriate subsystem implementation
-func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
 	ctx.Debugf("[SSH] ssh.dispatch(req=%v, wantReply=%v)", req.Type, req.WantReply)
 	// if this SSH server is configured to only proxy, we do not support anything other
 	// than our own custom "subsystems" and environment manipulation
@@ -979,7 +946,7 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
 	}
 }
 
-func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
 	roles, err := s.fetchRoleSet(ctx.teleportUser, ctx.clusterName)
 	if err != nil {
 		return trace.Wrap(err)
@@ -1041,7 +1008,7 @@ func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *ctx) 
 }
 
 // handleWinChange gets called when 'window chnged' SSH request comes in
-func (s *Server) handleWinChange(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) handleWinChange(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
 	params, err := parseWinChange(req)
 	if err != nil {
 		ctx.Error(err)
@@ -1057,7 +1024,7 @@ func (s *Server) handleWinChange(ch ssh.Channel, req *ssh.Request, ctx *ctx) err
 	return trace.Wrap(s.reg.notifyWinChange(*params, ctx))
 }
 
-func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
 	sb, err := parseSubsystemRequest(s, req)
 	if err != nil {
 		ctx.Warnf("[SSH] %v failed to parse subsystem request: %v", err)
@@ -1081,7 +1048,7 @@ func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *ctx) err
 
 // handleEnv accepts environment variables sent by the client and stores them
 // in connection context
-func (s *Server) handleEnv(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) handleEnv(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
 	var e sshutils.EnvReqParams
 	if err := ssh.Unmarshal(req.Payload, &e); err != nil {
 		ctx.Error(err)
@@ -1092,7 +1059,7 @@ func (s *Server) handleEnv(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
 }
 
 // handlePTYReq allocates PTY for this SSH connection per client's request
-func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
 	var (
 		params *rsession.TerminalParams
 		err    error
@@ -1137,7 +1104,7 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *ctx) error 
 // a command after making an SSH connection)
 //
 // Note: this also handles 'scp' requests because 'scp' is a subset of "exec"
-func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
 	execResponse, err := parseExecRequest(req, ctx)
 	if err != nil {
 		ctx.Infof("failed to parse exec request: %v", err)
@@ -1194,6 +1161,21 @@ func (s *Server) handleKeepAlive(req *ssh.Request) {
 	}
 
 	log.Debugf("[KEEP ALIVE] Replied to %q", req.Type)
+}
+
+// serverContext builds and returns a *srv.ServerContext.
+func (s *Server) serverContext(sconn *ssh.ServerConn) *srv.ServerContext {
+	return &srv.ServerContext{
+		Component:             component,
+		ServerConn:            sconn,
+		ServerID:              s.uuid,
+		Namespace:             s.getNamespace(),
+		AdvertiseAddr:         s.AdvertiseAddr(),
+		PermitUserEnvironment: s.permitUserEnvironment,
+		AuditLog:              s.alog,
+		AuthService:           s.authService,
+		SessionServer:         s.sessionServer,
+	}
 }
 
 func replyError(ch ssh.Channel, req *ssh.Request, err error) {

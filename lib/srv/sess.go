@@ -368,6 +368,26 @@ func newSession(id session.ID, r *SessionRegistry, ctx *SessionContext) (*active
 	return sess, nil
 }
 
+// TODO(russjones)
+func (r *SessionRegistry) PushTermSizeToParty(sconn *ssh.ServerConn, ch ssh.Channel) error {
+	// the party may not be immediately available for this connection,
+	// keep asking for a full second:
+	for i := 0; i < 10; i++ {
+		party := r.PartyForConnection(sconn)
+		if party == nil {
+			time.Sleep(time.Millisecond * 100)
+			continue
+		}
+
+		// this starts a loop which will keep updating the terminal
+		// size for every SSH write back to this connection
+		party.termSizePusher(ch)
+		return nil
+	}
+
+	return trace.Errorf("unable to push term size to party")
+}
+
 // PartyForConnection finds an existing party which owns the given connection
 func (r *SessionRegistry) PartyForConnection(sconn *ssh.ServerConn) *party {
 	r.Lock()
