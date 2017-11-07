@@ -859,10 +859,10 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 			}
 		}
 		select {
-		case creq := <-ctx.SubsystemResultCh:
+		case subsystemResult := <-ctx.SubsystemResultCh:
 			// this means that subsystem has finished executing and
 			// want us to close session and the channel
-			ctx.Debugf("[SSH] close session request: %v", creq.err)
+			ctx.Debugf("[SSH] close session request: %v", subsystemResult.Err)
 			return
 		case req := <-in:
 			if req == nil {
@@ -877,13 +877,13 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 			if req.WantReply {
 				req.Reply(true, nil)
 			}
-		case result := <-ctx.result:
-			ctx.Debugf("[SSH] ctx.result = %v", result)
+		case execResult := <-ctx.ExecResultCh:
+			ctx.Debugf("[SSH] ctx.result = %v", execResult)
 			// this means that exec process has finished and delivered the execution result,
 			// we send it back and close the session
-			_, err := ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{C: uint32(result.code)}))
+			_, err := ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{C: uint32(execResult.Code)}))
 			if err != nil {
-				ctx.Infof("[SSH] %v failed to send exit status: %v", result.command, err)
+				ctx.Infof("[SSH] %v failed to send exit status: %v", execResult.Command, err)
 			}
 			return
 		}
@@ -918,8 +918,14 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionCont
 		return s.handlePTYReq(ch, req, ctx)
 	case "shell":
 		// SSH client asked to launch shell, we allocate PTY and start shell session
-		ctx.exec = &execResponse{ctx: ctx}
-		if err := s.reg.openSession(ch, req, ctx); err != nil {
+		//ctx.exec = &execResponse{ctx: ctx}
+		var err error
+		ctx.ExecRequest, err = srv.ParseExecRequest(req, ctx)
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		if err := s.reg.OpenSession(ch, req, ctx); err != nil {
 			log.Error(err)
 			return trace.Wrap(err)
 		}
@@ -947,15 +953,15 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionCont
 }
 
 func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
-	roles, err := s.fetchRoleSet(ctx.teleportUser, ctx.clusterName)
+	roles, err := s.fetchRoleSet(ctx.TeleportUser, ctx.ClusterName)
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	if err := roles.CheckAgentForward(ctx.login); err != nil {
+	if err := roles.CheckAgentForward(ctx.SystemLogin); err != nil {
 		log.Warningf("[SSH:node] denied forward agent %v", err)
 		return trace.Wrap(err)
 	}
-	systemUser, err := user.Lookup(ctx.login)
+	systemUser, err := user.Lookup(ctx.SystemLogin)
 	if err != nil {
 		return trace.ConvertSystemError(err)
 	}
@@ -968,12 +974,12 @@ func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *srv.S
 		return trace.Wrap(err)
 	}
 
-	authChan, _, err := ctx.conn.OpenChannel("auth-agent@openssh.com", nil)
+	authChan, _, err := ctx.ServerConn.OpenChannel("auth-agent@openssh.com", nil)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 	clientAgent := agent.NewClient(authChan)
-	ctx.setAgent(clientAgent, authChan)
+	ctx.SetAgent(clientAgent, authChan)
 
 	pid := os.Getpid()
 	socketDir, err := ioutil.TempDir(os.TempDir(), "teleport-")

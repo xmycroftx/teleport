@@ -123,7 +123,7 @@ type SessionContext struct {
 	IsTestStub bool
 
 	// Exec is the command to be executed within this session context.
-	Exec Exec
+	ExecRequest Exec
 
 	// ClusterName is the name of the cluster the user is authenticated with.
 	ClusterName string

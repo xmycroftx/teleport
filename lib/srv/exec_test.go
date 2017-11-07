@@ -80,7 +80,7 @@ func (s *ExecSuite) SetUpSuite(c *check.C) {
 	s.ctx.activeSession = &activeSession{id: "xxx"}
 	s.ctx.TeleportUser = "galt"
 	s.ctx.ServerConn = &ssh.ServerConn{Conn: s}
-	s.ctx.Exec = &ExecResponse{Ctx: s.ctx}
+	s.ctx.ExecRequest = &localExecRequest{Ctx: s.ctx}
 	//s.ctx.srv = &Server{authService: a, uuid: "00000000-0000-0000-0000-000000000000"}
 	s.localAddr, _ = utils.ParseAddr("127.0.0.1:3022")
 	s.remoteAddr, _ = utils.ParseAddr("10.0.0.5:4817")
@@ -114,7 +114,7 @@ func (s *ExecSuite) TestOSCommandPrep(c *check.C) {
 
 	// non-empty command (exec a prog)
 	s.ctx.IsTestStub = true
-	s.ctx.Exec.SetCmd("ls -lh /etc")
+	s.ctx.ExecRequest.SetCommand("ls -lh /etc")
 	cmd, err = prepareCommand(s.ctx)
 	c.Assert(err, check.IsNil)
 	c.Assert(cmd, check.NotNil)
@@ -124,7 +124,7 @@ func (s *ExecSuite) TestOSCommandPrep(c *check.C) {
 	c.Assert(cmd.Env, check.DeepEquals, expectedEnv)
 
 	// command without args
-	s.ctx.Exec.SetCmd("top")
+	s.ctx.ExecRequest.SetCommand("top")
 	cmd, err = prepareCommand(s.ctx)
 	c.Assert(err, check.IsNil)
 	c.Assert(cmd.Path, check.Equals, "/bin/sh")

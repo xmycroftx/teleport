@@ -86,7 +86,7 @@ func (r *SessionRegistry) Close() {
 }
 
 // joinShell either joins an existing session or starts a new shell
-func (s *SessionRegistry) openSession(ch ssh.Channel, req *ssh.Request, ctx *SessionContext) error {
+func (s *SessionRegistry) OpenSession(ch ssh.Channel, req *ssh.Request, ctx *SessionContext) error {
 	if ctx.activeSession != nil {
 		// emit "joined session" event:
 		ctx.EmitAuditEvent(events.SessionJoinEvent, events.EventFields{
@@ -552,7 +552,7 @@ func (s *activeSession) start(ch ssh.Channel, ctx *SessionContext) error {
 	}
 
 	if err := s.term.Run(); err != nil {
-		ctx.Errorf("shell command (%v) failed: %v", ctx.Exec.GetCmd(), err)
+		ctx.Errorf("shell command (%v) failed: %v", ctx.ExecRequest.GetCommand(), err)
 		return trace.ConvertSystemError(err)
 	}
 	if err := s.addParty(p); err != nil {

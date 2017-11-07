@@ -18,5 +18,5 @@ package srv
 
 // SubsystemResult holds the result of execution of a subsystem.
 type SubsystemResult struct {
-	err error
+	Err error
 }
