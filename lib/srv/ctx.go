@@ -54,6 +54,20 @@ type ServerContext struct {
 	SessionServer session.Service
 }
 
+// EmitAuditEvent logs a given event to the audit log attached to the server
+// who owns these sessions.
+func (c *ServerContext) EmitAuditEvent(eventType string, fields events.EventFields) {
+	log.Debugf("server.EmitAuditEvent(%v)", eventType)
+
+	if c.AuditLog == nil {
+		log.Warn("SSH server has no audit log")
+	}
+
+	if err := c.AuditLog.EmitAuditEvent(eventType, fields); err != nil {
+		log.Error(err)
+	}
+}
+
 // SessionContext holds session specific context, such as SSH auth agents, PTYs,
 // and other resources. SessionContext also holds a ServerContext which can be
 // used to access resources on the underlying server. SessionContext can also
@@ -61,8 +75,8 @@ type ServerContext struct {
 type SessionContext struct {
 	*log.Entry
 
-	// mu is used to protect resources that are concurrently accessed.
-	mu sync.RWMutex
+	// RWMutex is used to protect resources that are concurrently accessed.
+	sync.RWMutex
 
 	// closers is a list of io.Closer that will be called when session closes
 	// this is handy as sometimes client closes session, in this case resources
@@ -114,11 +128,11 @@ type SessionContext struct {
 	ClusterName string
 
 	// ServerContext holds the server context.
-	ServerContext ServerContext
+	ServerContext *ServerContext
 }
 
 // NewSessionContext configures a new SessionContext and returns it.
-func NewSessionContext(serverContext ServerContext) *SessionContext {
+func NewSessionContext(serverContext *ServerContext) *SessionContext {
 	sessionContext := &SessionContext{
 		SessionID:         int(atomic.AddInt32(&ctxID, int32(1))),
 		Environment:       make(map[string]string),
@@ -143,25 +157,31 @@ func NewSessionContext(serverContext ServerContext) *SessionContext {
 	return sessionContext
 }
 
+// EmitAuditEvent logs a given event to the audit log attached to the server
+// who owns these sessions.
+func (c *SessionContext) EmitAuditEvent(eventType string, fields events.EventFields) {
+	c.ServerContext.EmitAuditEvent(eventType, fields)
+}
+
 // AddCloser adds any closer in SessionContext that will be called whenever
 // server closes session channel.
 func (c *SessionContext) AddCloser(closer io.Closer) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
 	c.closers = append(c.closers, closer)
 }
 
 func (c *SessionContext) GetAgent() (agent.Agent, ssh.Channel) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.RLock()
+	defer c.RUnlock()
 
 	return c.agent, c.agentChannel
 }
 
 func (c *SessionContext) SetAgent(a agent.Agent, ch ssh.Channel) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
 	// if we already had a channel, close it before setting the new one
 	if c.agentChannel != nil {
@@ -174,15 +194,15 @@ func (c *SessionContext) SetAgent(a agent.Agent, ch ssh.Channel) {
 }
 
 func (c *SessionContext) GetTerm() Terminal {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.RLock()
+	defer c.RUnlock()
 
 	return c.terminal
 }
 
 func (c *SessionContext) SetTerm(t Terminal) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
 	c.terminal = t
 }
@@ -191,8 +211,8 @@ func (c *SessionContext) SetTerm(t Terminal) {
 // we do this to avoid calling Close() under lock to avoid potential deadlocks
 func (c *SessionContext) takeClosers() []io.Closer {
 	// this is done to avoid any operation holding the lock for too long
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
 	closers := []io.Closer{}
 	if c.terminal != nil {
@@ -250,8 +270,4 @@ func (c *SessionContext) SendSubsystemResult(s SubsystemResult) {
 func (c *SessionContext) String() string {
 	sconn := c.ServerContext.ServerConn
 	return fmt.Sprintf("SessionContext(%v->%v, user=%v, id=%v)", sconn.RemoteAddr(), sconn.LocalAddr(), sconn.User(), c.SessionID)
-}
-
-func (c *SessionContext) EmitAuditEvent(string, events.EventFields) {
-	return
 }

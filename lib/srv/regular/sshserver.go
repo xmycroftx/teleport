@@ -37,7 +37,8 @@ import (
 	"github.com/gravitational/teleport/lib/limiter"
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/services"
-	rsession "github.com/gravitational/teleport/lib/session"
+	"github.com/gravitational/teleport/lib/session"
+	"github.com/gravitational/teleport/lib/srv"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/teleagent"
 	"github.com/gravitational/teleport/lib/utils"
@@ -63,8 +64,8 @@ type Server struct {
 	hostSigner    ssh.Signer
 	shell         string
 	authService   auth.AccessPoint
-	reg           *sessionRegistry
-	sessionServer rsession.Service
+	reg           *srv.SessionRegistry
+	sessionServer session.Service
 	limiter       *limiter.Limiter
 
 	labels      map[string]string                //static server labels
@@ -145,9 +146,9 @@ func SetShell(shell string) ServerOption {
 }
 
 // SetSessionServer represents realtime session registry server
-func SetSessionServer(srv rsession.Service) ServerOption {
+func SetSessionServer(sessionServer session.Service) ServerOption {
 	return func(s *Server) error {
-		s.sessionServer = srv
+		s.sessionServer = sessionServer
 		return nil
 	}
 }
@@ -278,8 +279,21 @@ func New(addr utils.NetAddr,
 		component = teleport.ComponentNode
 	}
 
-	s.reg = newSessionRegistry(s)
-	srv, err := sshutils.NewServer(
+	serverContext := &srv.ServerContext{
+		Component: component,
+		ServerID:  s.uuid,
+		Namespace: s.getNamespace(),
+		// TODO(russjones): Need to set ServerConn at some point!!
+		// TODO(russjones): Is this correct?
+		//AdvertiseAddr:         s.getAdvertiseIP(),
+		PermitUserEnvironment: s.permitUserEnvironment,
+		AuditLog:              s.alog,
+		AuthService:           s.authService,
+		SessionServer:         s.sessionServer,
+	}
+	s.reg = srv.NewSessionRegistry(serverContext)
+
+	sshsrv, err := sshutils.NewServer(
 		component,
 		addr, s, signers,
 		sshutils.AuthMethods{PublicKey: s.keyAuth},
@@ -291,7 +305,7 @@ func New(addr utils.NetAddr,
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	s.srv = srv
+	s.srv = sshsrv
 	return s, nil
 }
 
@@ -370,13 +384,13 @@ func (s *Server) getInfo() services.Server {
 
 // registerServer attempts to register server in the cluster
 func (s *Server) registerServer() error {
-	srv := s.getInfo()
-	srv.SetTTL(s.clock, defaults.ServerHeartbeatTTL)
+	server := s.getInfo()
+	server.SetTTL(s.clock, defaults.ServerHeartbeatTTL)
 	if !s.proxyMode {
-		return trace.Wrap(s.authService.UpsertNode(srv))
+		return trace.Wrap(s.authService.UpsertNode(server))
 	}
-	srv.SetPublicAddr(s.proxyPublicAddr.String())
-	return trace.Wrap(s.authService.UpsertProxy(srv))
+	server.SetPublicAddr(s.proxyPublicAddr.String())
+	return trace.Wrap(s.authService.UpsertProxy(server))
 }
 
 // heartbeatPresence periodically calls into the auth server to let everyone
@@ -610,19 +624,19 @@ func (s *Server) isAuthority(cert ssh.PublicKey) bool {
 	return false
 }
 
-// EmitAuditEvent logs a given event to the audit log attached to the
-// server who owns these sessions
-func (s *Server) EmitAuditEvent(eventType string, fields events.EventFields) {
-	log.Debugf("server.EmitAuditEvent(%v)", eventType)
-	alog := s.alog
-	if alog != nil {
-		if err := alog.EmitAuditEvent(eventType, fields); err != nil {
-			log.Error(err)
-		}
-	} else {
-		log.Warn("SSH server has no audit log")
-	}
-}
+//// EmitAuditEvent logs a given event to the audit log attached to the
+//// server who owns these sessions
+//func (s *Server) EmitAuditEvent(eventType string, fields events.EventFields) {
+//	log.Debugf("server.EmitAuditEvent(%v)", eventType)
+//	alog := s.alog
+//	if alog != nil {
+//		if err := alog.EmitAuditEvent(eventType, fields); err != nil {
+//			log.Error(err)
+//		}
+//	} else {
+//		log.Warn("SSH server has no audit log")
+//	}
+//}
 
 // keyAuth implements SSH client authentication using public keys and is called
 // by the server every time the client connects
@@ -664,7 +678,7 @@ func (s *Server) keyAuth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permiss
 				events.AuthAttemptErr:     err.Error(),
 			}
 			log.Warningf("[SSH] failed login attempt %#v", fields)
-			s.EmitAuditEvent(events.AuthAttemptEvent, fields)
+			s.alog.EmitAuditEvent(events.AuthAttemptEvent, fields)
 		}
 	}
 	permissions, err := s.certChecker.Authenticate(conn, key)

@@ -19,11 +19,14 @@ package regular
 import (
 	"encoding/json"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/srv"
 
 	"github.com/gravitational/trace"
+
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
 )
 
 // proxySubsys is an SSH subsystem for easy proxyneling through proxy server
@@ -49,7 +52,7 @@ func (t *proxySitesSubsys) wait() error {
 
 // start serves a request for "proxysites" custom SSH subsystem. It builds an array of
 // service.Site structures, and writes it serialized as JSON back to the SSH client
-func (t *proxySitesSubsys) start(sconn *ssh.ServerConn, ch ssh.Channel, req *ssh.Request, ctx *ctx) error {
+func (t *proxySitesSubsys) start(sconn *ssh.ServerConn, ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
 	log.Debugf("proxysites.start(%v)", ctx)
 	remoteSites := t.srv.proxyTun.GetSites()
 
