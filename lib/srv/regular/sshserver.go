@@ -313,18 +313,18 @@ func (s *Server) getNamespace() string {
 	return services.ProcessNamespace(s.namespace)
 }
 
-func (s *Server) logFields(fields log.Fields) log.Fields {
-	var component string
-	if s.proxyMode {
-		component = teleport.ComponentProxy
-	} else {
-		component = teleport.ComponentNode
-	}
-	return log.Fields{
-		trace.Component:       component,
-		trace.ComponentFields: fields,
-	}
-}
+//func (s *Server) logFields(fields log.Fields) log.Fields {
+//	var component string
+//	if s.proxyMode {
+//		component = teleport.ComponentProxy
+//	} else {
+//		component = teleport.ComponentNode
+//	}
+//	return log.Fields{
+//		trace.Component:       component,
+//		trace.ComponentFields: fields,
+//	}
+//}
 
 // Addr returns server address
 func (s *Server) Addr() string {
@@ -919,11 +919,12 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionCont
 	case "shell":
 		// SSH client asked to launch shell, we allocate PTY and start shell session
 		//ctx.exec = &execResponse{ctx: ctx}
-		var err error
-		ctx.ExecRequest, err = srv.ParseExecRequest(req, ctx)
+
+		execRequest, err := parseExecRequest(req)
 		if err != nil {
 			return trace.Wrap(err)
 		}
+		ctx.ExecRequest = srv.NewExecRequest(execRequest, ctx)
 
 		if err := s.reg.OpenSession(ch, req, ctx); err != nil {
 			log.Error(err)
@@ -1003,11 +1004,11 @@ func (s *Server) handleAgentForward(ch ssh.Channel, req *ssh.Request, ctx *srv.S
 	if req.WantReply {
 		req.Reply(true, nil)
 	}
-	ctx.setEnv(teleport.SSHAuthSock, socketPath)
-	ctx.setEnv(teleport.SSHAgentPID, fmt.Sprintf("%v", pid))
-	ctx.addCloser(agentServer)
-	ctx.addCloser(dirCloser)
-	ctx.Debugf("[SSH:node] opened agent channel for teleport user %v and socket %v", ctx.teleportUser, socketPath)
+	ctx.Environment[teleport.SSHAuthSock] = socketPath
+	ctx.Environment[teleport.SSHAgentPID] = fmt.Sprintf("%v", pid)
+	ctx.AddCloser(agentServer)
+	ctx.AddCloser(dirCloser)
+	ctx.Debugf("[SSH:node] opened agent channel for teleport user %v and socket %v", ctx.TeleportUser, socketPath)
 	go agentServer.Serve()
 
 	return nil
@@ -1020,14 +1021,14 @@ func (s *Server) handleWinChange(ch ssh.Channel, req *ssh.Request, ctx *srv.Sess
 		ctx.Error(err)
 		return trace.Wrap(err)
 	}
-	term := ctx.getTerm()
+	term := ctx.GetTerm()
 	if term != nil {
-		err = term.setWinsize(*params)
+		err = term.SetWinSize(*params)
 		if err != nil {
 			ctx.Error(err)
 		}
 	}
-	return trace.Wrap(s.reg.notifyWinChange(*params, ctx))
+	return trace.Wrap(s.reg.NotifyWinChange(*params, ctx))
 }
 
 func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
@@ -1039,15 +1040,15 @@ func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *srv.Sess
 	ctx.Debugf("[SSH] subsystem request: %v", sb)
 	// starting subsystem is blocking to the client,
 	// while collecting its result and waiting is not blocking
-	if err := sb.start(ctx.conn, ch, req, ctx); err != nil {
+	if err := sb.start(ctx.ServerConn, ch, req, ctx); err != nil {
 		ctx.Warnf("[SSH] failed executing request: %v", err)
-		ctx.sendSubsystemResult(trace.Wrap(err))
+		ctx.SendSubsystemResult(srv.SubsystemResult{trace.Wrap(err)})
 		return trace.Wrap(err)
 	}
 	go func() {
 		err := sb.wait()
 		log.Debugf("[SSH] %v finished with result: %v", sb, err)
-		ctx.sendSubsystemResult(trace.Wrap(err))
+		ctx.SendSubsystemResult(srv.SubsystemResult{trace.Wrap(err)})
 	}()
 	return nil
 }
@@ -1060,47 +1061,37 @@ func (s *Server) handleEnv(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionCon
 		ctx.Error(err)
 		return trace.Wrap(err, "failed to parse env request")
 	}
-	ctx.setEnv(e.Name, e.Value)
+	ctx.Environment[e.Name] = e.Value
 	return nil
 }
 
 // handlePTYReq allocates PTY for this SSH connection per client's request
 func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
-	var (
-		params *rsession.TerminalParams
-		err    error
-		term   *terminal
-	)
+	// parse and get the window size requested
 	r, err := parsePTYReq(req)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	// if the caller asked for an invalid sized pty (like ansible
-	// which asks for a 0x0 size) update the request with defaults
-	err = r.CheckAndSetDefaults()
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	params, err = rsession.NewTerminalParamsFromUint32(r.W, r.H)
+	params, err := session.NewTerminalParamsFromUint32(r.W, r.H)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 	ctx.Debugf("[SSH] terminal requested of size %v", *params)
 
-	// already have terminal?
-	if term = ctx.getTerm(); term == nil {
-		term, params, err = requestPTY(req)
+	// get an existing terminal or create a new one
+	term := ctx.GetTerm()
+	if term == nil {
+		term, err = srv.NewTerminal(ctx)
 		if err != nil {
 			return trace.Wrap(err)
 		}
-		ctx.setTerm(term)
+		ctx.SetTerm(term)
 	}
-	term.setWinsize(*params)
+	term.SetWinSize(*params)
 
 	// update the session:
-	if err := s.reg.notifyWinChange(*params, ctx); err != nil {
+	if err := s.reg.NotifyWinChange(*params, ctx); err != nil {
 		log.Error(err)
 	}
 	return nil
@@ -1111,29 +1102,30 @@ func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *srv.Session
 //
 // Note: this also handles 'scp' requests because 'scp' is a subset of "exec"
 func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionContext) error {
-	execResponse, err := parseExecRequest(req, ctx)
+	execRequest, err := parseExecRequest(req)
 	if err != nil {
 		ctx.Infof("failed to parse exec request: %v", err)
 		replyError(ch, req, err)
 		return trace.Wrap(err)
 	}
+	ctx.ExecRequest = srv.NewExecRequest(execRequest, ctx)
 	if req.WantReply {
 		req.Reply(true, nil)
 	}
 	// a terminal has been previously allocate for this command.
 	// run this inside an interactive session
-	if ctx.term != nil {
-		return s.reg.openSession(ch, req, ctx)
+	if ctx.GetTerm() != nil {
+		return s.reg.OpenSession(ch, req, ctx)
 	}
 	// ... otherwise, regular execution:
-	result, err := execResponse.start(ch)
+	result, err := ctx.ExecRequest.Start(ch)
 	if err != nil {
 		ctx.Error(err)
 		replyError(ch, req, err)
 	}
 	if result != nil {
-		ctx.Debugf("%v result collected: %v", execResponse, result)
-		ctx.sendResult(*result)
+		ctx.Debugf("%v result collected: %v", ctx.ExecRequest, result)
+		ctx.SendExecResult(*result)
 	}
 	if err != nil {
 		return trace.Wrap(err)
@@ -1142,12 +1134,12 @@ func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *srv.SessionCo
 	// in case if result is nil and no error, this means that program is
 	// running in the background
 	go func() {
-		result, err = execResponse.wait()
+		result, err = ctx.ExecRequest.Wait()
 		if err != nil {
-			ctx.Errorf("%v wait failed: %v", execResponse, err)
+			ctx.Errorf("%v wait failed: %v", ctx.ExecRequest, err)
 		}
 		if result != nil {
-			ctx.sendResult(*result)
+			ctx.SendExecResult(*result)
 		}
 	}()
 	return nil
@@ -1171,6 +1163,13 @@ func (s *Server) handleKeepAlive(req *ssh.Request) {
 
 // serverContext builds and returns a *srv.ServerContext.
 func (s *Server) serverContext(sconn *ssh.ServerConn) *srv.ServerContext {
+	var component string
+	if s.proxyMode {
+		component = teleport.ComponentProxy
+	} else {
+		component = teleport.ComponentNode
+	}
+
 	return &srv.ServerContext{
 		Component:             component,
 		ServerConn:            sconn,
@@ -1192,21 +1191,59 @@ func replyError(ch ssh.Channel, req *ssh.Request, err error) {
 	}
 }
 
-func closeAll(closers ...io.Closer) error {
-	var err error
-	for _, cl := range closers {
-		if cl == nil {
-			continue
-		}
-		if e := cl.Close(); e != nil {
-			err = e
-		}
+//func closeAll(closers ...io.Closer) error {
+//	var err error
+//	for _, cl := range closers {
+//		if cl == nil {
+//			continue
+//		}
+//		if e := cl.Close(); e != nil {
+//			err = e
+//		}
+//	}
+//	return err
+//}
+//
+//type closerFunc func() error
+//
+//func (f closerFunc) Close() error {
+//	return f()
+//}
+
+func parseWinChange(req *ssh.Request) (*session.TerminalParams, error) {
+	var r sshutils.WinChangeReqParams
+	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
+		return nil, trace.Wrap(err)
 	}
-	return err
+	params, err := session.NewTerminalParamsFromUint32(r.W, r.H)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return params, nil
 }
 
-type closerFunc func() error
+func parsePTYReq(req *ssh.Request) (*sshutils.PTYReqParams, error) {
+	var r sshutils.PTYReqParams
+	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
+		log.Warnf("failed to parse PTY request: %v", err)
+		return nil, err
+	}
 
-func (f closerFunc) Close() error {
-	return f()
+	// if the caller asked for an invalid sized pty (like ansible
+	// which asks for a 0x0 size) update the request with defaults
+	if err := r.CheckAndSetDefaults(); err != nil {
+		return nil, err
+	}
+
+	return &r, nil
+}
+
+func parseExecRequest(req *ssh.Request) (*sshutils.ExecRequest, error) {
+	var r sshutils.ExecRequest
+
+	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
+		return nil, trace.BadParameter("failed to parse exec request, error: %v", err)
+	}
+
+	return &r, nil
 }

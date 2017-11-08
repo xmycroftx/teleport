@@ -35,6 +35,7 @@ import (
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/shell"
+	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/utils"
 
 	"github.com/gravitational/trace"
@@ -66,20 +67,6 @@ type Exec interface {
 	Wait() (*ExecResult, error)
 }
 
-// ParseExecRequest parses SSH "exec" request and returns something can be
-// executed locally or remotely.
-func ParseExecRequest(req *ssh.Request, ctx *SessionContext) (Exec, error) {
-	var e localExecRequest
-	if err := ssh.Unmarshal(req.Payload, &e); err != nil {
-		return nil, trace.BadParameter("failed to parse exec request, error: %v", err)
-	}
-	e.Ctx = ctx
-
-	ctx.ExecRequest = &e
-
-	return ctx.ExecRequest, nil
-}
-
 // localExecRequest prepares the response to a 'exec' SSH request, i.e. executing
 // a command after making an SSH connection and delivering the result back.
 type localExecRequest struct {
@@ -90,6 +77,13 @@ type localExecRequest struct {
 
 	// Cmd is the parsed representation of Command.
 	Cmd *exec.Cmd
+}
+
+func NewExecRequest(execRequest *sshutils.ExecRequest, ctx *SessionContext) Exec {
+	return &localExecRequest{
+		Ctx:     ctx,
+		Command: execRequest.Command,
+	}
 }
 
 func (e *localExecRequest) GetCommand() string {

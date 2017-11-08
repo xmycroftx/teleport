@@ -207,7 +207,7 @@ func (s *SessionRegistry) getParties(ctx *SessionContext) (parties []*party) {
 
 // notifyWinChange is called when an SSH server receives a command notifying
 // us that the terminal size has changed
-func (s *SessionRegistry) notifyWinChange(params session.TerminalParams, ctx *SessionContext) error {
+func (s *SessionRegistry) NotifyWinChange(params session.TerminalParams, ctx *SessionContext) error {
 	if ctx.activeSession == nil {
 		log.Debugf("notifyWinChange(): no session found!")
 		return nil

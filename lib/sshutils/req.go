@@ -71,6 +71,10 @@ func (p *PTYReqParams) CheckAndSetDefaults() error {
 	return nil
 }
 
+type ExecRequest struct {
+	Command string
+}
+
 const (
 	// SessionEnvVar is environment variable for SSH session
 	SessionEnvVar = "TELEPORT_SESSION"

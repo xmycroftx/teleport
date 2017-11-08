@@ -20,8 +20,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gravitational/trace"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/gravitational/teleport/lib/srv"
+
+	"github.com/gravitational/trace"
 )
 
 type subsys struct {
@@ -32,7 +35,7 @@ type subsys struct {
 // in the context of the session
 type subsystem interface {
 	// start starts subsystem
-	start(*ssh.ServerConn, ssh.Channel, *ssh.Request, *ctx) error
+	start(*ssh.ServerConn, ssh.Channel, *ssh.Request, *srv.SessionContext) error
 	// wait is returned by subystem when it's completed
 	wait() error
 }
