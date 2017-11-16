@@ -26,6 +26,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
@@ -55,14 +56,14 @@ type Server interface {
 	// startup is allowed.
 	PermitUserEnvironment() bool
 
-	// EmitAuditEvent an Audit Event from this server.
+	// EmitAuditEvent emits an Audit Event to the Auth Server.
 	EmitAuditEvent(string, events.EventFields)
 
-	// GetAuditLog returns the Audit Log for this server.
+	// GetAuditLog returns the Audit Log for this cluster.
 	GetAuditLog() events.IAuditLog
 
-	// GetAuthService returns an auth.AccessPoint for this server.
-	GetAuthService() auth.AccessPoint
+	// GetAccessPoint returns an auth.AccessPoint for this cluster.
+	GetAccessPoint() auth.AccessPoint
 
 	// GetSessionServer returns a session server.
 	GetSessionServer() rsession.Service
@@ -132,6 +133,14 @@ type ServerContext struct {
 	// Certificate is the SSH user certificate bytes marshalled in the OpenSSH
 	// authorized_keys format.
 	Certificate []byte
+
+	// RemoteClient holds a SSH client to a remote server. Only used by the
+	// recording proxy.
+	RemoteClient *ssh.Client
+
+	// RemoteSession holds a SSH session to a remote server. Only used by the
+	// recording proxy.
+	RemoteSession *ssh.Session
 }
 
 // NewServerContext creates a new *ServerContext which is used to pass and
@@ -161,6 +170,10 @@ func NewServerContext(srv Server, conn *ssh.ServerConn) *ServerContext {
 		},
 	})
 	return ctx
+}
+
+func (c *ServerContext) GetServer() Server {
+	return c.srv
 }
 
 // GetCertificate parses the SSH certificate bytes and returns a *ssh.Certificate.
@@ -277,6 +290,7 @@ func (c *ServerContext) takeClosers() []io.Closer {
 	// this is done to avoid any operation holding the lock for too long
 	c.Lock()
 	defer c.Unlock()
+
 	closers := []io.Closer{}
 	if c.term != nil {
 		closers = append(closers, c.term)
@@ -315,6 +329,30 @@ func (c *ServerContext) SendSubsystemResult(r SubsystemResult) {
 	}
 }
 
+// ProxyPublicAddress tries to get the public address from the first
+// available proxy. if public_address is not set, fall back to the hostname
+// of the first proxy we get back.
+func (c *ServerContext) ProxyPublicAddress() string {
+	proxyHost := "<proxyhost>:3080"
+
+	if c.srv != nil {
+		proxies, err := c.srv.GetAccessPoint().GetProxies()
+		if err != nil {
+			c.Errorf("Unable to retrieve proxy list: %v", err)
+		}
+
+		if len(proxies) > 0 {
+			proxyHost = proxies[0].GetPublicAddr()
+			if proxyHost == "" {
+				proxyHost = fmt.Sprintf("%v:%v", proxies[0].GetHostname(), defaults.HTTPListenPort)
+				c.Debugf("public_address not set for proxy, returning proxyHost: %q", proxyHost)
+			}
+		}
+	}
+
+	return proxyHost
+}
+
 func (c *ServerContext) String() string {
 	return fmt.Sprintf("ServerContext(%v->%v, user=%v, id=%v)", c.Conn.RemoteAddr(), c.Conn.LocalAddr(), c.Conn.User(), c.id)
 }
@@ -325,7 +363,8 @@ func closeAll(closers ...io.Closer) error {
 		if cl == nil {
 			continue
 		}
-		if e := cl.Close(); e != nil {
+
+		if e := cl.Close(); err != nil {
 			err = e
 		}
 	}

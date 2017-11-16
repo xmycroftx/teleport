@@ -113,7 +113,10 @@ type Server struct {
 	macAlgorithms []string
 
 	// authHandlers are common authorization and authentication related handlers.
-	authHandlers srv.AuthHandlers
+	authHandlers *srv.AuthHandlers
+
+	// termHandlers are common terminal related handlers.
+	termHandlers *srv.TermHandlers
 }
 
 func (s *Server) GetNamespace() string {
@@ -124,7 +127,7 @@ func (s *Server) GetAuditLog() events.IAuditLog {
 	return s.alog
 }
 
-func (s *Server) GetAuthService() auth.AccessPoint {
+func (s *Server) GetAccessPoint() auth.AccessPoint {
 	return s.authService
 }
 
@@ -298,8 +301,10 @@ func New(addr utils.NetAddr,
 		component = teleport.ComponentNode
 	}
 
+	s.reg = srv.NewSessionRegistry(s)
+
 	// add in common auth handlers
-	s.authHandlers = srv.AuthHandlers{
+	s.authHandlers = &srv.AuthHandlers{
 		Entry: log.WithFields(log.Fields{
 			trace.Component:       component,
 			trace.ComponentFields: log.Fields{},
@@ -310,11 +315,15 @@ func New(addr utils.NetAddr,
 		AccessPoint: s.authService,
 	}
 
-	s.reg = srv.NewSessionRegistry(s)
+	// common term handlers
+	s.termHandlers = &srv.TermHandlers{
+		SessionRegistry: s.reg,
+	}
+
 	server, err := sshutils.NewServer(
 		component,
 		addr, s, signers,
-		sshutils.AuthMethods{PublicKey: s.authHandlers.KeyAuth},
+		sshutils.AuthMethods{PublicKey: s.authHandlers.UserKeyAuth},
 		sshutils.SetLimiter(s.limiter),
 		sshutils.SetRequestHandler(s),
 		sshutils.SetCiphers(s.ciphers),
@@ -696,7 +705,7 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, ch ssh.Channel, in
 				return
 			}
 			if err := s.dispatch(ch, req, ctx); err != nil {
-				replyError(ch, req, err)
+				s.replyError(ch, req, err)
 				return
 			}
 			if req.WantReply {
@@ -723,45 +732,41 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *srv.ServerConte
 	// than our own custom "subsystems" and environment manipulation
 	if s.proxyMode {
 		switch req.Type {
-		case "subsystem":
+		case sshutils.SubsystemRequest:
 			return s.handleSubsystem(ch, req, ctx)
-		case "env":
+		case sshutils.EnvRequest:
 			// we currently ignore setting any environment variables via SSH for security purposes
 			return s.handleEnv(ch, req, ctx)
-		case sshutils.AgentReq:
-			// to maintain interoperability with OpenSSH, agent forwarding requests
-			// should never fail, so accept the request, do nothing, and return success
+		case sshutils.AgentForwardRequest:
+			// process agent forwarding, but we will only forward agent to proxy in
+			// recording proxy mode.
+			err := s.handleAgentForwardProxy(req, ctx)
+			if err != nil {
+				log.Info(err)
+			}
 			return nil
 		default:
 			return trace.BadParameter(
-				"proxy doesn't support request type '%v'", req.Type)
+				"(%v) proxy doesn't support request type '%v'", s.Component(), req.Type)
 		}
 	}
 
 	switch req.Type {
-	case "exec":
-		// exec is a remote execution of a program, does not use PTY
-		return s.handleExec(ch, req, ctx)
-	case sshutils.PTYReq:
-		// SSH client asked to allocate PTY
-		return s.handlePTYReq(ch, req, ctx)
-	case "shell":
-		// SSH client asked to launch shell, we allocate PTY and start shell session
-		ctx.ExecRequest = srv.NewExecRequest(ctx, "")
-		if err := s.reg.OpenSession(ch, req, ctx); err != nil {
-			log.Error(err)
-			return trace.Wrap(err)
-		}
-		return nil
-	case "env":
+	case sshutils.ExecRequest:
+		return s.termHandlers.HandleExec(ch, req, ctx)
+	case sshutils.PTYRequest:
+		return s.termHandlers.HandlePTYReq(ch, req, ctx)
+	case sshutils.ShellRequest:
+		return s.termHandlers.HandleShell(ch, req, ctx)
+	case sshutils.WindowChangeRequest:
+		return s.termHandlers.HandleWinChange(ch, req, ctx)
+	case sshutils.EnvRequest:
 		return s.handleEnv(ch, req, ctx)
-	case "subsystem":
+	case sshutils.SubsystemRequest:
 		// subsystems are SSH subsystems defined in http://tools.ietf.org/html/rfc4254 6.6
 		// they are in essence SSH session extensions, allowing to implement new SSH commands
 		return s.handleSubsystem(ch, req, ctx)
-	case sshutils.WindowChangeReq:
-		return s.handleWinChange(ch, req, ctx)
-	case sshutils.AgentReq:
+	case sshutils.AgentForwardRequest:
 		// This happens when SSH client has agent forwarding enabled, in this case
 		// client sends a special request, in return SSH server opens new channel
 		// that uses SSH protocol for agent drafted here:
@@ -772,20 +777,20 @@ func (s *Server) dispatch(ch ssh.Channel, req *ssh.Request, ctx *srv.ServerConte
 		// to maintain interoperability with OpenSSH, agent forwarding requests
 		// should never fail, all errors should be logged and we should continue
 		// processing requests.
-		err := s.handleAgentForwardNode(ch, req, ctx)
+		err := s.handleAgentForwardNode(req, ctx)
 		if err != nil {
 			log.Info(err)
 		}
 		return nil
 	default:
 		return trace.BadParameter(
-			"proxy doesn't support request type '%v'", req.Type)
+			"%v doesn't support request type '%v'", s.Component(), req.Type)
 	}
 }
 
 // handleAgentForwardNode will create a unix socket and serve the agent running
 // on the client on it.
-func (s *Server) handleAgentForwardNode(ch ssh.Channel, req *ssh.Request, ctx *srv.ServerContext) error {
+func (s *Server) handleAgentForwardNode(req *ssh.Request, ctx *srv.ServerContext) error {
 	// check if the users rbac role allows agent forwarding
 	err := s.authHandlers.CheckAgentForward(ctx)
 	if err != nil {
@@ -793,13 +798,13 @@ func (s *Server) handleAgentForwardNode(ch ssh.Channel, req *ssh.Request, ctx *s
 	}
 
 	// open a channel to the client where the client will serve an agent
-	authChan, _, err := ctx.Conn.OpenChannel("auth-agent@openssh.com", nil)
+	authChannel, _, err := ctx.Conn.OpenChannel(sshutils.AuthAgentRequest, nil)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
 	// save the agent in the context so it can be used later
-	ctx.SetAgent(agent.NewClient(authChan), authChan)
+	ctx.SetAgent(agent.NewClient(authChannel), authChannel)
 
 	// serve an agent on a unix socket on this node
 	err = s.serveAgent(ctx)
@@ -810,30 +815,42 @@ func (s *Server) handleAgentForwardNode(ch ssh.Channel, req *ssh.Request, ctx *s
 	return nil
 }
 
-// handleWinChange gets called when 'window chnged' SSH request comes in
-func (s *Server) handleWinChange(ch ssh.Channel, req *ssh.Request, ctx *srv.ServerContext) error {
-	params, err := parseWinChange(req)
-	if err != nil {
-		ctx.Error(err)
-		return trace.Wrap(err)
-	}
-	term := ctx.GetTerm()
-	if term != nil {
-		err = term.SetWinSize(*params)
-		if err != nil {
-			ctx.Error(err)
-		}
-	}
-	err = s.reg.NotifyWinChange(*params, ctx)
+// handleAgentForwardProxy will forward the clients agent to the proxy (when
+// the proxy is running in recording mode). When running in normal mode, this
+// request will do nothing. To maintain interoperability, agent forwarding
+// requests should never fail, all errors should be logged and we should
+// continue processing requests.
+func (s *Server) handleAgentForwardProxy(req *ssh.Request, ctx *srv.ServerContext) error {
+	// we only support agent forwarding at the proxy when the proxy is in recording mode
+	clusterConfig, err := s.GetAccessPoint().GetClusterConfig()
 	if err != nil {
 		return trace.Wrap(err)
 	}
+	if clusterConfig.GetSessionRecording() != services.RecordAtProxy {
+		return trace.BadParameter("agent forwarding to proxy only supported in recording mode")
+	}
+
+	// check if the users rbac role allows agent forwarding
+	err = s.authHandlers.CheckAgentForward(ctx)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	// open a channel to the client where the client will serve an agent
+	authChannel, _, err := ctx.Conn.OpenChannel(sshutils.AuthAgentRequest, nil)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	// we save the agent so it can be used when we make a proxy subsystem request
+	// later and use it to build a remote connection to the target node.
+	ctx.SetAgent(agent.NewClient(authChannel), authChannel)
 
 	return nil
 }
 
 func (s *Server) handleSubsystem(ch ssh.Channel, req *ssh.Request, ctx *srv.ServerContext) error {
-	sb, err := parseSubsystemRequest(s, req)
+	sb, err := s.parseSubsystemRequest(req, ctx)
 	if err != nil {
 		ctx.Warnf("[SSH] %v failed to parse subsystem request: %v", err)
 		return trace.Wrap(err)
@@ -863,84 +880,6 @@ func (s *Server) handleEnv(ch ssh.Channel, req *ssh.Request, ctx *srv.ServerCont
 		return trace.Wrap(err, "failed to parse env request")
 	}
 	ctx.SetEnv(e.Name, e.Value)
-	return nil
-}
-
-// handlePTYReq allocates PTY for this SSH connection per client's request
-func (s *Server) handlePTYReq(ch ssh.Channel, req *ssh.Request, ctx *srv.ServerContext) error {
-	// parse and get the window size requested
-	r, err := srv.ParsePTYReq(req)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	params, err := rsession.NewTerminalParamsFromUint32(r.W, r.H)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	ctx.Debugf("[SSH] terminal requested of size %v", *params)
-
-	// get an existing terminal or create a new one
-	term := ctx.GetTerm()
-	if term == nil {
-		term, err = srv.NewTerminal(ctx)
-		if err != nil {
-			return trace.Wrap(err)
-		}
-		ctx.SetTerm(term)
-	}
-	term.SetWinSize(*params)
-
-	// update the session:
-	if err := s.reg.NotifyWinChange(*params, ctx); err != nil {
-		log.Error(err)
-	}
-	return nil
-}
-
-// handleExec is responsible for executing 'exec' SSH requests (i.e. executing
-// a command after making an SSH connection)
-//
-// Note: this also handles 'scp' requests because 'scp' is a subset of "exec"
-func (s *Server) handleExec(ch ssh.Channel, req *ssh.Request, ctx *srv.ServerContext) error {
-	execRequest, err := parseExecRequest(ctx, ch, req)
-	if err != nil {
-		ctx.Infof("failed to parse exec request: %v", err)
-		replyError(ch, req, err)
-		return trace.Wrap(err)
-	}
-	if req.WantReply {
-		req.Reply(true, nil)
-	}
-	// a terminal has been previously allocate for this command.
-	// run this inside an interactive session
-	if ctx.GetTerm() != nil {
-		return s.reg.OpenSession(ch, req, ctx)
-	}
-	// ... otherwise, regular execution:
-	result, err := execRequest.Start(ch)
-	if err != nil {
-		ctx.Error(err)
-		replyError(ch, req, err)
-	}
-	if result != nil {
-		ctx.Debugf("%v result collected: %v", execRequest, result)
-		ctx.SendExecResult(*result)
-	}
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	// in case if result is nil and no error, this means that program is
-	// running in the background
-	go func() {
-		result, err = execRequest.Wait()
-		if err != nil {
-			ctx.Errorf("%v wait failed: %v", execRequest, err)
-		}
-		if result != nil {
-			ctx.SendExecResult(*result)
-		}
-	}()
 	return nil
 }
 
@@ -991,7 +930,8 @@ func (s *Server) handleRecordingProxy(req *ssh.Request) {
 	log.Debugf("Replied to global request (%v, %v): %v", req.Type, req.WantReply, recordingProxy)
 }
 
-func replyError(ch ssh.Channel, req *ssh.Request, err error) {
+func (s *Server) replyError(ch ssh.Channel, req *ssh.Request, err error) {
+	log.Error(err)
 	message := []byte(utils.UserMessageFromError(err))
 	ch.Stderr().Write(message)
 	if req.WantReply {
@@ -999,39 +939,16 @@ func replyError(ch ssh.Channel, req *ssh.Request, err error) {
 	}
 }
 
-func parseWinChange(req *ssh.Request) (*rsession.TerminalParams, error) {
-	var r sshutils.WinChangeReqParams
-	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
-		return nil, trace.Wrap(err)
-	}
-	params, err := rsession.NewTerminalParamsFromUint32(r.W, r.H)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	return params, nil
-}
-
-func parseExecRequest(ctx *srv.ServerContext, channel ssh.Channel, req *ssh.Request) (srv.Exec, error) {
-	var r sshutils.ExecReq
-	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	ctx.ExecRequest = srv.NewExecRequest(ctx, r.Command)
-
-	return ctx.ExecRequest, nil
-}
-
-func parseSubsystemRequest(srv *Server, req *ssh.Request) (srv.Subsystem, error) {
+func (s *Server) parseSubsystemRequest(req *ssh.Request, ctx *srv.ServerContext) (srv.Subsystem, error) {
 	var r sshutils.SubsystemReq
 	if err := ssh.Unmarshal(req.Payload, &r); err != nil {
 		return nil, fmt.Errorf("failed to parse subsystem request, error: %v", err)
 	}
-	if srv.proxyMode && strings.HasPrefix(r.Name, "proxy:") {
-		return parseProxySubsys(r.Name, srv)
+	if s.proxyMode && strings.HasPrefix(r.Name, "proxy:") {
+		return parseProxySubsys(r.Name, s, ctx)
 	}
-	if srv.proxyMode && strings.HasPrefix(r.Name, "proxysites") {
-		return parseProxySitesSubsys(r.Name, srv)
+	if s.proxyMode && strings.HasPrefix(r.Name, "proxysites") {
+		return parseProxySitesSubsys(r.Name, s)
 	}
 	return nil, trace.BadParameter("unrecognized subsystem: %v", r.Name)
 }

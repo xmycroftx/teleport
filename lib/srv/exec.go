@@ -32,8 +32,8 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/gravitational/teleport"
-	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
+	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/shell"
 	"github.com/gravitational/teleport/lib/utils"
 
@@ -75,16 +75,31 @@ type Exec interface {
 }
 
 // NewExecRequest creates a new local or remote Exec.
-func NewExecRequest(ctx *ServerContext, command string) Exec {
-	return &LocalExecRequest{
+func NewExecRequest(ctx *ServerContext, command string) (Exec, error) {
+	clusterConfig, err := ctx.srv.GetAccessPoint().GetClusterConfig()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// when in recording mode, return *remoteExec
+	if clusterConfig.GetSessionRecording() == services.RecordAtProxy {
+		return &remoteExec{
+			ctx:     ctx,
+			command: command,
+			session: ctx.RemoteSession,
+		}, nil
+	}
+
+	// otherwise *localExec
+	return &localExec{
 		Ctx:     ctx,
 		Command: command,
-	}
+	}, nil
 }
 
-// LocalExecRequest prepares the response to a 'exec' SSH request, i.e. executing
+// localExec prepares the response to a 'exec' SSH request, i.e. executing
 // a command after making an SSH connection and delivering the result back.
-type LocalExecRequest struct {
+type localExec struct {
 	// Command is the command that will be executed.
 	Command string
 
@@ -96,18 +111,18 @@ type LocalExecRequest struct {
 }
 
 // GetCommand returns the command string.
-func (e *LocalExecRequest) GetCommand() string {
+func (e *localExec) GetCommand() string {
 	return e.Command
 }
 
 // SetCommand gets the command string.
-func (e *LocalExecRequest) SetCommand(command string) {
+func (e *localExec) SetCommand(command string) {
 	e.Command = command
 }
 
-// start launches the given command returns (nil, nil) if successful. execResult is only used
-// to communicate an error while launching
-func (e *LocalExecRequest) Start(channel ssh.Channel) (*ExecResult, error) {
+// Start launches the given command returns (nil, nil) if successful.
+// ExecResult is only used to communicate an error while launching.
+func (e *localExec) Start(channel ssh.Channel) (*ExecResult, error) {
 	var err error
 
 	// parse the command to see if the user is trying to run scp
@@ -149,7 +164,7 @@ func (e *LocalExecRequest) Start(channel ssh.Channel) (*ExecResult, error) {
 }
 
 // Wait will block while the command executes.
-func (e *LocalExecRequest) Wait() (*ExecResult, error) {
+func (e *localExec) Wait() (*ExecResult, error) {
 	if e.Cmd.Process == nil {
 		e.Ctx.Errorf("no process")
 	}
@@ -167,7 +182,7 @@ func (e *LocalExecRequest) Wait() (*ExecResult, error) {
 	return execResult, trace.Wrap(err)
 }
 
-func (e *LocalExecRequest) String() string {
+func (e *localExec) String() string {
 	return fmt.Sprintf("Exec(Command=%v)", e.Command)
 }
 
@@ -207,6 +222,31 @@ func prepareInteractiveCommand(ctx *ServerContext) (*exec.Cmd, error) {
 	return c, nil
 }
 
+func (e *localExec) parseSecureCopy() error {
+	// split up command by space to grab the first word
+	args := strings.Split(e.GetCommand(), " ")
+
+	if len(args) > 0 {
+		_, f := filepath.Split(args[0])
+
+		// is this scp request?
+		if f == "scp" {
+			// for 'scp' requests, we'll launch ourselves with scp parameters:
+			teleportBin, err := osext.Executable()
+			if err != nil {
+				return trace.Wrap(err)
+			}
+			e.Command = fmt.Sprintf("%s scp --remote-addr=%s --local-addr=%s %v",
+				teleportBin,
+				e.Ctx.Conn.RemoteAddr().String(),
+				e.Ctx.Conn.LocalAddr().String(),
+				strings.Join(args[1:], " "))
+		}
+	}
+
+	return nil
+}
+
 // prepareCommand configures exec.Cmd for executing a given command within an SSH
 // session.
 //
@@ -239,29 +279,11 @@ func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
 		shell = "/bin/sh"
 	}
 
-	// try and get the public address from the first available proxy. if public_address
-	// is not set, fall back to the hostname of the first proxy we get back.
-	proxyHost := "<proxyhost>:3080"
-	if ctx.srv != nil {
-		proxies, err := ctx.srv.GetAuthService().GetProxies()
-		if err != nil {
-			log.Errorf("Unexpected response from authService.GetProxies(): %v", err)
-		}
-
-		if len(proxies) > 0 {
-			proxyHost = proxies[0].GetPublicAddr()
-			if proxyHost == "" {
-				proxyHost = fmt.Sprintf("%v:%v", proxies[0].GetHostname(), defaults.HTTPListenPort)
-				log.Debugf("public_address not set for proxy, returning proxyHost: %q", proxyHost)
-			}
-		}
-	}
-
 	// by default, execute command using user's shell like openssh does:
 	// https://github.com/openssh/openssh-portable/blob/master/session.c
 	c := exec.Command(shell, "-c", ctx.ExecRequest.GetCommand())
 
-	clusterName, err := ctx.srv.GetAuthService().GetDomainName()
+	clusterName, err := ctx.srv.GetAccessPoint().GetDomainName()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -273,7 +295,7 @@ func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
 		"USER=" + osUserName,
 		"SHELL=" + shell,
 		teleport.SSHTeleportUser + "=" + ctx.TeleportUser,
-		teleport.SSHSessionWebproxyAddr + "=" + proxyHost,
+		teleport.SSHSessionWebproxyAddr + "=" + ctx.ProxyPublicAddress(),
 		teleport.SSHTeleportHostUUID + "=" + ctx.srv.ID(),
 		teleport.SSHTeleportClusterName + "=" + clusterName,
 	}
@@ -350,31 +372,6 @@ func prepareCommand(ctx *ServerContext) (*exec.Cmd, error) {
 	return c, nil
 }
 
-func (e *LocalExecRequest) parseSecureCopy() error {
-	// split up command by space to grab the first word
-	args := strings.Split(e.GetCommand(), " ")
-
-	if len(args) > 0 {
-		_, f := filepath.Split(args[0])
-
-		// is this scp request?
-		if f == "scp" {
-			// for 'scp' requests, we'll launch ourselves with scp parameters:
-			teleportBin, err := osext.Executable()
-			if err != nil {
-				return trace.Wrap(err)
-			}
-			e.Command = fmt.Sprintf("%s scp --remote-addr=%s --local-addr=%s %v",
-				teleportBin,
-				e.Ctx.Conn.RemoteAddr().String(),
-				e.Ctx.Conn.LocalAddr().String(),
-				strings.Join(args[1:], " "))
-		}
-	}
-
-	return nil
-}
-
 func collectLocalStatus(cmd *exec.Cmd, err error) (*ExecResult, error) {
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -388,6 +385,85 @@ func collectLocalStatus(cmd *exec.Cmd, err error) (*ExecResult, error) {
 		return nil, fmt.Errorf("unknown exit status: %T(%v)", cmd.ProcessState.Sys(), cmd.ProcessState.Sys())
 	}
 	return &ExecResult{Code: status.ExitStatus(), Command: cmd.Path}, nil
+}
+
+// remoteExec is used to run an "exec" SSH request and return the result.
+type remoteExec struct {
+	command string
+	session *ssh.Session
+	ctx     *ServerContext
+}
+
+// GetCommand returns the command string.
+func (e *remoteExec) GetCommand() string {
+	return e.command
+}
+
+// SetCommand gets the command string.
+func (e *remoteExec) SetCommand(command string) {
+	e.command = command
+}
+
+// Start launches the given command returns (nil, nil) if successful.
+// ExecResult is only used to communicate an error while launching.
+func (r *remoteExec) Start(ch ssh.Channel) (*ExecResult, error) {
+	r.session.Stdout = ch
+	r.session.Stderr = ch.Stderr()
+
+	inputWriter, err := r.session.StdinPipe()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	go func() {
+		io.Copy(inputWriter, ch)
+		inputWriter.Close()
+	}()
+
+	err = r.session.Start(r.command)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return nil, nil
+}
+
+// Wait will block while the command executes then return the result as well
+// as emit an event to the Audit Log.
+func (r *remoteExec) Wait() (*ExecResult, error) {
+	// block until the remote command has finished execution
+	err := r.session.Wait()
+
+	// figure out if the command successfully exited or if it exited in failure
+	execResult, err := r.collectRemoteStatus(err)
+
+	// emit the result of execution to the audit log
+	emitExecAuditEvent(r.ctx, r.command, execResult, err)
+
+	return execResult, trace.Wrap(err)
+}
+
+func (r *remoteExec) collectRemoteStatus(err error) (*ExecResult, error) {
+	if err != nil {
+		// if we got an ssh.ExitError, return the status code
+		if exitErr, ok := err.(*ssh.ExitError); ok {
+			return &ExecResult{
+				Code:    exitErr.ExitStatus(),
+				Command: r.GetCommand(),
+			}, err
+		}
+
+		// otherwise return a generic 255 command failed code
+		return &ExecResult{
+			Code:    teleport.RemoteCommandFailure,
+			Command: r.GetCommand(),
+		}, err
+	}
+
+	// success, return 0
+	return &ExecResult{
+		Code:    teleport.RemoteCommandSuccess,
+		Command: r.GetCommand(),
+	}, nil
 }
 
 func emitExecAuditEvent(ctx *ServerContext, cmd string, status *ExecResult, err error) {
