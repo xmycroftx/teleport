@@ -187,6 +187,12 @@ type Identity interface {
 
 	// GetSAMLAuthRequest returns OSAML auth request if found
 	GetSAMLAuthRequest(id string) (*SAMLAuthRequest, error)
+
+	CreateGithubConnector(connector GithubConnector) error
+	UpsertGithubConnector(connector GithubConnector) error
+	GetGithubConnectors(withSecrets bool) ([]GithubConnector, error)
+	GetGithubConnector(id string, withSecrets bool) (GithubConnector, error)
+	DeleteGithubConnector(id string) error
 }
 
 // VerifyPassword makes sure password satisfies our requirements (relaxed),
@@ -228,8 +234,8 @@ const ExternalIdentitySchema = `{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-     "connector_id": {"type": "string"}, 
-     "username": {"type": "string"} 
+     "connector_id": {"type": "string"},
+     "username": {"type": "string"}
    }
 }`
 

@@ -177,6 +177,13 @@ func NewAPIServer(config *APIConfig) http.Handler {
 	srv.POST("/:version/saml/requests/create", srv.withAuth(srv.createSAMLAuthRequest))
 	srv.POST("/:version/saml/requests/validate", srv.withAuth(srv.validateSAMLResponse))
 
+	// Github connector
+	srv.POST("/:version/github/connectors", srv.withAuth(srv.createGithubConnector))
+	srv.PUT("/:version/github/connectors", srv.withAuth(srv.upsertGithubConnector))
+	srv.GET("/:version/github/connectors", srv.withAuth(srv.getGithubConnectors))
+	srv.GET("/:version/github/connectors/:id", srv.withAuth(srv.getGithubConnector))
+	srv.DELETE("/:version/github/connectors/:id", srv.withAuth(srv.deleteGithubConnector))
+
 	// U2F
 	srv.GET("/:version/u2f/signuptokens/:token", srv.withAuth(srv.getSignupU2FRegisterRequest))
 	srv.POST("/:version/u2f/users", srv.withAuth(srv.createUserWithU2FToken))
@@ -1416,6 +1423,83 @@ func (s *APIServer) validateSAMLResponse(auth ClientI, w http.ResponseWriter, r 
 		raw.HostSigners[i] = data
 	}
 	return &raw, nil
+}
+
+type createGithubConnectorRawReq struct {
+	Connector json.RawMessage `json:"connector"`
+}
+
+func (s *APIServer) createGithubConnector(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	var req createGithubConnectorRawReq
+	if err := httplib.ReadJSON(r, &req); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	connector, err := services.GetGithubConnectorMarshaler().UnmarshalGithubConnector(req.Connector)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	if err := auth.CreateGithubConnector(connector); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return message("ok"), nil
+}
+
+type upsertGithubConnectorRawReq struct {
+	Connector json.RawMessage `json:"connector"`
+}
+
+func (s *APIServer) upsertGithubConnector(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	var req upsertGithubConnectorRawReq
+	if err := httplib.ReadJSON(r, &req); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	connector, err := services.GetGithubConnectorMarshaler().UnmarshalGithubConnector(req.Connector)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	if err := auth.UpsertGithubConnector(connector); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return message("ok"), nil
+}
+
+func (s *APIServer) getGithubConnectors(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	withSecrets, _, err := httplib.ParseBool(r.URL.Query(), "with_secrets")
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	connectors, err := auth.GetGithubConnectors(withSecrets)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	items := make([]json.RawMessage, len(connectors))
+	for i, connector := range connectors {
+		bytes, err := services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		items[i] = bytes
+	}
+	return items, nil
+}
+
+func (s *APIServer) getGithubConnector(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	withSecrets, _, err := httplib.ParseBool(r.URL.Query(), "with_secrets")
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	connector, err := auth.GetGithubConnector(p.ByName("id"), withSecrets)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return rawMessage(services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector))
+}
+
+func (s *APIServer) deleteGithubConnector(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
+	if err := auth.DeleteGithubConnector(p.ByName("id")); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return message("ok"), nil
 }
 
 // HTTP GET /:version/events?query

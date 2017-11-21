@@ -1124,7 +1124,7 @@ func (c *Client) UpsertSAMLConnector(connector services.SAMLConnector) error {
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	_, err = c.PostJSON(c.Endpoint("saml", "connectors"), &upsertSAMLConnectorRawReq{
+	_, err = c.PutJSON(c.Endpoint("saml", "connectors"), &upsertSAMLConnectorRawReq{
 		Connector: data,
 	})
 	if err != nil {
@@ -1226,6 +1226,74 @@ func (c *Client) ValidateSAMLResponse(re string) (*SAMLAuthResponse, error) {
 		response.HostSigners[i] = ca
 	}
 	return &response, nil
+}
+
+func (c *Client) CreateGithubConnector(connector services.GithubConnector) error {
+	bytes, err := services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	_, err = c.PostJSON(c.Endpoint("github", "connectors"), &createGithubConnectorRawReq{
+		Connector: bytes,
+	})
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
+func (c *Client) UpsertGithubConnector(connector services.GithubConnector) error {
+	bytes, err := services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	_, err = c.PutJSON(c.Endpoint("github", "connectors"), &upsertGithubConnectorRawReq{
+		Connector: bytes,
+	})
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
+func (c *Client) GetGithubConnectors(withSecrets bool) ([]services.GithubConnector, error) {
+	out, err := c.Get(c.Endpoint("github", "connectors"), url.Values{
+		"with_secrets": []string{strconv.FormatBool(withSecrets)},
+	})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(out.Bytes(), &items); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	connectors := make([]services.GithubConnector, len(items))
+	for i, raw := range items {
+		connector, err := services.GetGithubConnectorMarshaler().UnmarshalGithubConnector(raw)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		connectors[i] = connector
+	}
+	return connectors, nil
+}
+
+func (c *Client) GetGithubConnector(id string, withSecrets bool) (services.GithubConnector, error) {
+	out, err := c.Get(c.Endpoint("github", "connectors", id), url.Values{
+		"with_secrets": []string{strconv.FormatBool(withSecrets)},
+	})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return services.GetGithubConnectorMarshaler().UnmarshalGithubConnector(out.Bytes())
+}
+
+func (c *Client) DeleteGithubConnector(id string) error {
+	_, err := c.Delete(c.Endpoint("github", "connectors", id))
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
 }
 
 // EmitAuditEvent sends an auditable event to the auth server (part of evets.IAuditLog interface)
@@ -1774,6 +1842,12 @@ type IdentityService interface {
 
 	// ValidateSAMLResponse validates SAML auth response
 	ValidateSAMLResponse(re string) (*SAMLAuthResponse, error)
+
+	CreateGithubConnector(connector services.GithubConnector) error
+	UpsertGithubConnector(connector services.GithubConnector) error
+	GetGithubConnectors(withSecrets bool) ([]services.GithubConnector, error)
+	GetGithubConnector(id string, withSecrets bool) (services.GithubConnector, error)
+	DeleteGithubConnector(id string) error
 
 	// GetU2FSignRequest generates request for user trying to authenticate with U2F token
 	GetU2FSignRequest(user string, password []byte) (*u2f.SignRequest, error)

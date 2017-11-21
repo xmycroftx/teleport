@@ -65,6 +65,9 @@ const (
 	// KindSAML is SAML connector resource
 	KindSAML = "saml"
 
+	// KindGithub is Github connector resource
+	KindGithub = "github"
+
 	// KindOIDCRequest is oidc auth request resource
 	KindOIDCRequest = "oidc_request"
 
@@ -106,6 +109,9 @@ const (
 
 	// KindSAMLConnector is a SAML connector resource
 	KindSAMLConnector = "saml"
+
+	// KindGithubConnector is Github OAuth2 connector resource
+	KindGithubConnector = "github"
 
 	// KindAuthPreference is the type of authentication for this cluster.
 	KindClusterAuthPreference = "cluster_auth_preference"

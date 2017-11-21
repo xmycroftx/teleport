@@ -417,6 +417,7 @@ var (
 	oidcAuthRequestsPath = []string{"web", "connectors", "oidc", "requests"}
 	samlConnectorsPath   = []string{"web", "connectors", "saml", "connectors"}
 	samlAuthRequestsPath = []string{"web", "connectors", "saml", "requests"}
+	githubConnectorsPath = []string{"web", "connectors", "github", "connectors"}
 )
 
 // UpsertSignupToken upserts signup token - one time token that lets user to create a user account
@@ -824,4 +825,75 @@ func (s *IdentityService) GetSAMLAuthRequest(id string) (*services.SAMLAuthReque
 		return nil, trace.Wrap(err)
 	}
 	return req, nil
+}
+
+func (s *IdentityService) CreateGithubConnector(connector services.GithubConnector) error {
+	if err := connector.CheckAndSetDefaults(); err != nil {
+		return trace.Wrap(err)
+	}
+	bytes, err := services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	ttl := backend.TTL(s.Clock(), connector.Expiry())
+	if err := s.CreateVal(githubConnectorsPath, connector.GetName(), bytes, ttl); err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
+func (s *IdentityService) UpsertGithubConnector(connector services.GithubConnector) error {
+	if err := connector.CheckAndSetDefaults(); err != nil {
+		return trace.Wrap(err)
+	}
+	bytes, err := services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	ttl := backend.TTL(s.Clock(), connector.Expiry())
+	if err := s.UpsertVal(githubConnectorsPath, connector.GetName(), bytes, ttl); err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
+func (s *IdentityService) GetGithubConnectors(withSecrets bool) ([]services.GithubConnector, error) {
+	ids, err := s.GetKeys(githubConnectorsPath)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	connectors := make([]services.GithubConnector, 0, len(ids))
+	for _, id := range ids {
+		connector, err := s.GetGithubConnector(id, withSecrets)
+		if err != nil {
+			if !trace.IsNotFound(err) {
+				return nil, trace.Wrap(err)
+			}
+			continue
+		}
+		connectors = append(connectors, connector)
+	}
+	return connectors, nil
+}
+
+func (s *IdentityService) GetGithubConnector(id string, withSecrets bool) (services.GithubConnector, error) {
+	bytes, err := s.GetVal(githubConnectorsPath, id)
+	if err != nil {
+		if trace.IsNotFound(err) {
+			return nil, trace.NotFound("Github connector %q is not configured", id)
+		}
+		return nil, trace.Wrap(err)
+	}
+	connector, err := services.GetGithubConnectorMarshaler().UnmarshalGithubConnector(bytes)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	if !withSecrets {
+		connector.SetClientSecret("")
+	}
+	return connector, nil
+}
+
+func (s *IdentityService) DeleteGithubConnector(id string) error {
+	return trace.Wrap(s.DeleteKey(githubConnectorsPath, id))
 }
