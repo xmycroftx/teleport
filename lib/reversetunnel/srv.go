@@ -715,6 +715,7 @@ func newRemoteSite(srv *server, domainName string) (*remoteSite, error) {
 		ctx:   srv.ctx,
 		clock: srv.Clock,
 	}
+
 	// transport uses connection do dial out to the remote address
 	remoteSite.transport = &http.Transport{
 		Dial: remoteSite.dialAccessPoint,

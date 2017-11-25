@@ -64,7 +64,7 @@ type AgentConfig struct {
 	// Signers contains authentication signers
 	Signers []ssh.Signer
 	// Client is a client to the local auth servers
-	Client *auth.TunClient
+	Client auth.ClientI
 	// AccessPoint is a caching access point to the local auth servers
 	AccessPoint auth.AccessPoint
 	// Context is a parent context
@@ -308,7 +308,7 @@ func (a *Agent) proxyAccessPoint(ch ssh.Channel, req <-chan *ssh.Request) {
 	a.Debugf("proxyAccessPoint")
 	defer ch.Close()
 
-	conn, err := a.Client.GetDialer()()
+	conn, err := a.Client.GetDialer()(context.TODO())
 	if err != nil {
 		a.Warningf("error dialing: %v", err)
 		return

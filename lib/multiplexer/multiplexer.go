@@ -74,6 +74,7 @@ func New(cfg Config) (*Mux, error) {
 	if err := cfg.CheckAndSetDefaults(); err != nil {
 		return nil, trace.Wrap(err)
 	}
+
 	ctx, cancel := context.WithCancel(cfg.Context)
 	waitContext, waitCancel := context.WithCancel(context.TODO())
 	return &Mux{
@@ -159,6 +160,10 @@ func (m *Mux) Serve() error {
 		if err == nil {
 			go m.detectAndForward(conn)
 			continue
+		}
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			tcpConn.SetKeepAlive(true)
+			tcpConn.SetKeepAlivePeriod(3 * time.Minute)
 		}
 		if m.isClosed() {
 			return nil

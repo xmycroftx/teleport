@@ -187,6 +187,19 @@ type Identity interface {
 
 	// GetSAMLAuthRequest returns OSAML auth request if found
 	GetSAMLAuthRequest(id string) (*SAMLAuthRequest, error)
+
+	// DELETE IN: 2.5.0
+	// CreateCertExchangeToken creates token used for
+	// certificate exchanges between trusted clusters
+	CreateCertExchangeToken(token CertExchangeToken) error
+
+	// DELETE IN: 2.5.0
+	// GetCertExchangeToken retrieves cert exchange token
+	GetCertExchangeToken(name string) (*CertExchangeToken, error)
+
+	// DELETE IN: 2.5.0
+	// DeleteCertExchangeToken deletes cert exchange token
+	DeleteCertExchangeToken(name string) error
 }
 
 // VerifyPassword makes sure password satisfies our requirements (relaxed),
@@ -201,6 +214,14 @@ func VerifyPassword(password []byte) error {
 			"password is too long, max length is %v", defaults.MaxPasswordLength)
 	}
 	return nil
+}
+
+// DELETE IN: 2.5.0
+// CertExchangeToken is during certificate exchange migration
+type CertExchangeToken struct {
+	Metadata Metadata `json:"metadata"`
+	// ClusterName this token is authenticated with
+	ClusterName string `json:"cluster_name"`
 }
 
 // SignupToken stores metadata about user signup token

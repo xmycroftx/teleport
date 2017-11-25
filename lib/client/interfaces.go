@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gravitational/teleport/lib/tlsca"
+
 	"github.com/gravitational/trace"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -28,9 +30,10 @@ import (
 
 // Key describes a complete (signed) client key
 type Key struct {
-	Priv []byte `json:"Priv,omitempty"`
-	Pub  []byte `json:"Pub,omitempty"`
-	Cert []byte `json:"Cert,omitempty"`
+	Priv    []byte `json:"Priv,omitempty"`
+	Pub     []byte `json:"Pub,omitempty"`
+	Cert    []byte `json:"Cert,omitempty"`
+	TLSCert []byte `json:"TLSCert,omitempty"`
 
 	// ProxyHost (optionally) contains the hostname of the proxy server
 	// which issued this key
@@ -92,7 +95,17 @@ func (k *Key) EqualsTo(other *Key) bool {
 	}
 	return bytes.Equal(k.Cert, other.Cert) &&
 		bytes.Equal(k.Priv, other.Priv) &&
-		bytes.Equal(k.Pub, other.Pub)
+		bytes.Equal(k.Pub, other.Pub) &&
+		bytes.Equal(k.TLSCert, other.TLSCert)
+}
+
+// TLSCertValidBefore returns the time of the TLS cert expiration
+func (k *Key) TLSCertValidBefore() (t time.Time, err error) {
+	cert, err := tlsca.ParseCertificatePEM(k.TLSCert)
+	if err != nil {
+		return t, trace.Wrap(err)
+	}
+	return cert.NotAfter, nil
 }
 
 // CertValidBefore returns the time of the cert expiration

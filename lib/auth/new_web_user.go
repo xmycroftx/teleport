@@ -35,7 +35,6 @@ import (
 
 	"github.com/gravitational/trace"
 	"github.com/pquerna/otp/totp"
-	log "github.com/sirupsen/logrus"
 
 	"github.com/tstranex/u2f"
 )
@@ -220,6 +219,13 @@ func (s *AuthServer) CreateUserWithOTP(token string, password string, otpToken s
 
 // CreateUserWithoutOTP creates an account with the provided password and deletes the token afterwards.
 func (s *AuthServer) CreateUserWithoutOTP(token string, password string) (services.WebSession, error) {
+	authPreference, err := s.GetAuthPreference()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	if authPreference.GetSecondFactor() != teleport.OFF {
+		return nil, trace.AccessDenied("missing second factor")
+	}
 	tokenData, err := s.GetSignupToken(token)
 	if err != nil {
 		return nil, trace.Wrap(err)

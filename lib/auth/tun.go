@@ -37,11 +37,10 @@ import (
 
 	"github.com/gravitational/trace"
 	"github.com/mailgun/ttlmap"
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
+	"github.com/tstranex/u2f"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
-
-	"github.com/tstranex/u2f"
 )
 
 // dialRetryInterval specifies the time interval tun client waits to retry
@@ -76,7 +75,7 @@ type TunClient struct {
 	// embed auth API HTTP client
 	Client
 
-	*log.Entry
+	*logrus.Entry
 
 	user string
 
@@ -156,6 +155,10 @@ func NewTunnel(addr utils.NetAddr,
 
 func (s *AuthTunnel) Addr() string {
 	return s.sshServer.Addr()
+}
+
+func (s *AuthTunnel) Serve(l net.Listener) error {
+	return s.sshServer.Serve(l)
 }
 
 func (s *AuthTunnel) Start() error {
@@ -795,9 +798,9 @@ func NewTunClient(purpose string,
 		return nil, trace.Wrap(err)
 	}
 	tc := &TunClient{
-		Entry: log.WithFields(log.Fields{
+		Entry: logrus.WithFields(logrus.Fields{
 			trace.Component: teleport.ComponentTunClient,
-			trace.ComponentFields: log.Fields{
+			trace.ComponentFields: logrus.Fields{
 				"purpose": purpose,
 			},
 		}),
@@ -811,7 +814,7 @@ func NewTunClient(purpose string,
 	for _, o := range opts {
 		o(tc)
 	}
-	tc.Debugf("created, auth servers: %v", authServers)
+	tc.Debugf("Created, auth servers: %v.", authServers)
 
 	clt, err := NewClient("http://stub:0", tc.Dial)
 	if err != nil {
@@ -824,7 +827,7 @@ func NewTunClient(purpose string,
 		cachedAuthServers, err := tc.addrStorage.GetAddresses()
 		if err != nil {
 			if !trace.IsNotFound(err) {
-				tc.Warnf("unable to load the auth server cache: %s", err.Error())
+				tc.Warnf("Unable to load the auth server cache: %s.", err.Error())
 			}
 		} else {
 			tc.setAuthServers(cachedAuthServers)
@@ -867,7 +870,7 @@ func (c *TunClient) GetDialer() AccessPointDialer {
 	addrNetwork := c.staticAuthServers[0].AddrNetwork
 	const dialRetryTimes = 3
 
-	return func() (conn net.Conn, err error) {
+	return func(ctx context.Context) (conn net.Conn, err error) {
 		for attempt := 0; attempt < dialRetryTimes; attempt++ {
 			conn, err = c.Dial(addrNetwork, "accesspoint:0")
 			if err == nil {
@@ -1135,5 +1138,5 @@ const (
 	AuthValidateTrustedCluster = "trusted-cluster"
 )
 
-// AccessPointDialer dials to auth access point  remote HTTP api
-type AccessPointDialer func() (net.Conn, error)
+// AccessPointDialer dials to auth access point  remote HTTP API
+type AccessPointDialer func(context.Context) (net.Conn, error)

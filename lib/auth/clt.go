@@ -19,6 +19,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,9 +39,9 @@ import (
 	"github.com/gravitational/teleport/lib/httplib"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/session"
+	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/trace"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/tstranex/u2f"
 )
 
@@ -61,16 +62,71 @@ type Dialer func(network, addr string) (net.Conn, error)
 // tunnel first, and then do HTTP-over-SSH. This client is wrapped by auth.TunClient
 // in lib/auth/tun.go
 type Client struct {
+	dialContext DialContext
 	roundtrip.Client
 	transport *http.Transport
 }
 
-// NewTracer returns request tracer based on the logging level
-func NewTracer() roundtrip.RequestTracer {
-	if log.GetLevel() >= log.DebugLevel {
-		return roundtrip.NewWriterTracer(log.StandardLogger().Writer())
+// DialContext is a function that dials to the specified address
+type DialContext func(in context.Context, network, addr string) (net.Conn, error)
+
+// NewAddrDialer returns new dialer from a list of addresses
+func NewAddrDialer(addrs []utils.NetAddr) DialContext {
+	dialer := net.Dialer{
+		Timeout:   defaults.DefaultDialTimeout,
+		KeepAlive: defaults.ReverseTunnelAgentHeartbeatPeriod,
 	}
-	return roundtrip.NewNopTracer()
+	return func(in context.Context, network, _ string) (net.Conn, error) {
+		var err error
+		var conn net.Conn
+		for _, addr := range addrs {
+			conn, err = dialer.DialContext(in, network, addr.Addr)
+			if err == nil {
+				return conn, nil
+			}
+		}
+		// not wrapping on purpose to preserve the original error
+		return nil, err
+	}
+}
+
+// NewTLSClientWithDialer returns new TLS client that uses mutual TLS authenticate
+// and dials the remote server using dialer
+func NewTLSClientWithDialer(dialContext DialContext, cfg *tls.Config, params ...roundtrip.ClientParam) (*Client, error) {
+	transport := &http.Transport{
+		// notice that below roundtrip.Client is passed
+		// teleport.APIEndpoint as an address for the API server, this is
+		// to make sure client verifies the DNS name of the API server
+		// custom DialContext overrrides this DNS name to the real address
+		// in addition this dialer tries multiple adresses if provided
+		DialContext:           dialContext,
+		ResponseHeaderTimeout: defaults.DefaultDialTimeout,
+		TLSClientConfig:       cfg,
+		MaxIdleConnsPerHost:   defaults.HTTPIdleConnsPerHost,
+		// IdleConnTimeout defines the maximum amount of time before idle connections
+		// are closed. Leaving this unset will lead to connections open forever and
+		// will cause memory leaks in a long running process
+		IdleConnTimeout: defaults.HTTPIdleTimeout,
+	}
+
+	params = append(params, roundtrip.HTTPClient(&http.Client{
+		Transport: transport,
+	}))
+
+	roundtripClient, err := roundtrip.NewClient("https://"+teleport.APIDomain, CurrentVersion, params...)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return &Client{
+		dialContext: dialContext,
+		Client:      *roundtripClient,
+		transport:   transport,
+	}, nil
+}
+
+// NewTLSClient returns new client using TLS mutual authentication
+func NewTLSClient(addrs []utils.NetAddr, cfg *tls.Config, params ...roundtrip.ClientParam) (*Client, error) {
+	return NewTLSClientWithDialer(NewAddrDialer(addrs), cfg, params...)
 }
 
 // NewAuthClient returns a new instance of the client which talks to
@@ -101,6 +157,20 @@ func NewClient(addr string, dialer Dialer, params ...roundtrip.ClientParam) (*Cl
 		Client:    *c,
 		transport: transport,
 	}, nil
+}
+
+// GetDialer returns dialer that will connect to auth server API
+func (c *Client) GetDialer() AccessPointDialer {
+	return func(ctx context.Context) (conn net.Conn, err error) {
+		return c.dialContext(ctx, "tcp", teleport.APIDomain)
+	}
+}
+
+// GetAgent creates an SSH key agent (similar object to what CLI uses), this
+// key agent fetches user keys directly from the auth server using a custom channel
+// created via "ReqWebSessionAgent" reguest
+func (c *Client) GetAgent() (AgentCloser, error) {
+	panic("not implemented")
 }
 
 func (c *Client) GetTransport() *http.Transport {
@@ -340,6 +410,25 @@ func (c *Client) RegisterUsingToken(token, hostID string, nodeName string, role 
 		return nil, trace.Wrap(err)
 	}
 
+	var keys PackedKeys
+	if err := json.Unmarshal(out.Bytes(), &keys); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return &keys, nil
+}
+
+// RenewCredentials returns a new set of credentials associated
+// with the server with the same privileges
+func (c *Client) GenerateServerKeys(hostID string, nodeName string, roles teleport.Roles) (*PackedKeys, error) {
+	out, err := c.PostJSON(c.Endpoint("server", "credentials"), generateServerKeysReq{
+		HostID:   hostID,
+		NodeName: nodeName,
+		Roles:    roles,
+	})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
 	var keys PackedKeys
 	if err := json.Unmarshal(out.Bytes(), &keys); err != nil {
 		return nil, trace.Wrap(err)
@@ -758,6 +847,36 @@ func (c *Client) CreateWebSession(user string) (services.WebSession, error) {
 	return services.GetWebSessionMarshaler().UnmarshalWebSession(out.Bytes())
 }
 
+// AuthenticateWebUser authenticates web user, creates and  returns web session
+// in case if authentication is successfull
+func (c *Client) AuthenticateWebUser(req AuthenticateUserRequest) (services.WebSession, error) {
+	out, err := c.PostJSON(
+		c.Endpoint("users", req.Username, "web", "authenticate"),
+		req,
+	)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return services.GetWebSessionMarshaler().UnmarshalWebSession(out.Bytes())
+}
+
+// AuthenticateSSHUser authenticates SSH console user, creates and  returns a pair of signed TLS and SSH
+// short lived certificates as a result
+func (c *Client) AuthenticateSSHUser(req AuthenticateSSHRequest) (*SSHLoginResponse, error) {
+	out, err := c.PostJSON(
+		c.Endpoint("users", req.Username, "ssh", "authenticate"),
+		req,
+	)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	var re SSHLoginResponse
+	if err := json.Unmarshal(out.Bytes(), &re); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return &re, nil
+}
+
 // GetWebSessionInfo checks if a web sesion is valid, returns session id in case if
 // it is valid, or error otherwise.
 func (c *Client) GetWebSessionInfo(user string, sid string) (services.WebSession, error) {
@@ -861,6 +980,7 @@ func (c *Client) GenerateHostCert(
 	return []byte(cert), nil
 }
 
+// DEPRECATE(2.5.0): obsolete due to TLS refactoring
 // GenerateUserCert takes the public key in the OpenSSH `authorized_keys` plain
 // text format, signs it using User Certificate Authority signing key and
 // returns the resulting certificate.
@@ -882,6 +1002,7 @@ func (c *Client) GenerateUserCert(key []byte, user string, ttl time.Duration, co
 	return []byte(cert), nil
 }
 
+// DEPRECATE(2.5.0): obsolete due to TLS refactoring
 // GenerateUserCertBundle takes the public key in the OpenSSH `authorized_keys`
 // plain text format, signs it using User Certificate Authority signing key and
 // returns the resulting certificate. It also includes the host certificate that
@@ -1086,6 +1207,7 @@ func (c *Client) ValidateOIDCAuthCallback(q url.Values) (*OIDCAuthResponse, erro
 		Identity: rawResponse.Identity,
 		Cert:     rawResponse.Cert,
 		Req:      rawResponse.Req,
+		TLSCert:  rawResponse.TLSCert,
 	}
 	if len(rawResponse.Session) != 0 {
 		session, err := services.GetWebSessionMarshaler().UnmarshalWebSession(rawResponse.Session)
@@ -1887,4 +2009,15 @@ type ClientI interface {
 
 	ValidateTrustedCluster(*ValidateTrustedClusterRequest) (*ValidateTrustedClusterResponse, error)
 	GetDomainName() (string, error)
+	// GenerateServerKeys generates new host private keys and certificates (signed
+	// by the host certificate authority) for a node
+	GenerateServerKeys(hostID string, nodeName string, roles teleport.Roles) (*PackedKeys, error)
+	// GetDialer returns dialer that will connect to auth server API
+	GetDialer() AccessPointDialer
+	// AuthenticateWebUser authenticates web user, creates and  returns web session
+	// in case if authentication is successfull
+	AuthenticateWebUser(req AuthenticateUserRequest) (services.WebSession, error)
+	// AuthenticateSSHUser authenticates SSH console user, creates and  returns a pair of signed TLS and SSH
+	// short lived certificates as a result
+	AuthenticateSSHUser(req AuthenticateSSHRequest) (*SSHLoginResponse, error)
 }

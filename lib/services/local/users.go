@@ -411,6 +411,7 @@ func (s *IdentityService) UpsertPassword(user string, password []byte) error {
 }
 
 var (
+	exchangeTokensPath   = []string{"certtokens"}
 	userTokensPath       = []string{"addusertokens"}
 	u2fRegChalPath       = []string{"adduseru2fchallenges"}
 	oidcConnectorsPath   = []string{"web", "connectors", "oidc", "connectors"}
@@ -418,6 +419,39 @@ var (
 	samlConnectorsPath   = []string{"web", "connectors", "saml", "connectors"}
 	samlAuthRequestsPath = []string{"web", "connectors", "saml", "requests"}
 )
+
+// DELETE IN: 2.5.0
+// CreateCertExchangeToken creates token used for
+// certificate exchanges between trusted clusters
+func (s *IdentityService) CreateCertExchangeToken(token services.CertExchangeToken) error {
+	ttl := backend.TTL(s.Clock(), token.Metadata.Expiry())
+	bytes, err := json.Marshal(token)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	return s.CreateVal(exchangeTokensPath, token.Metadata.Name, bytes, ttl)
+}
+
+// DELETE IN: 2.5.0
+// GetCertExchangeToken retrieves cert exchange token
+func (s *IdentityService) GetCertExchangeToken(token string) (*services.CertExchangeToken, error) {
+	bytes, err := s.GetVal(exchangeTokensPath, token)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	var data services.CertExchangeToken
+	err = json.Unmarshal(bytes, &data)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return &data, nil
+}
+
+// DELETE IN: 2.5.0
+// DeleteCertExchangeToken deletes cert exchange token
+func (s *IdentityService) DeleteCertExchangeToken(token string) error {
+	return s.DeleteKey(exchangeTokensPath, token)
+}
 
 // UpsertSignupToken upserts signup token - one time token that lets user to create a user account
 func (s *IdentityService) UpsertSignupToken(token string, tokenData services.SignupToken, ttl time.Duration) error {
