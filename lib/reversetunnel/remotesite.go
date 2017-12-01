@@ -382,8 +382,10 @@ func (s *remoteSite) dialAccessPoint(network, addr string) (net.Conn, error) {
 }
 
 type dialReq struct {
-	Server  string `json:"server"`
-	AgentId string `json:"agent_id"`
+	Server      string `json:"server"`
+	AgentId     string `json:"agent_id"`
+	Source      string `json:"src"`
+	Destination string `json:"dst"`
 }
 
 // Dial is used to connect a requesting client (say, tsh) to an SSH server
@@ -446,11 +448,13 @@ func (s *remoteSite) dialWithAgent(from, to net.Addr, a agent.Agent) (net.Conn, 
 	// connection using the specified agent
 	dr, err := json.Marshal(dialReq{Server: to.String(), AgentId: agentId})
 	if err != nil {
+		agentConn.Close()
 		return nil, trace.Wrap(err)
 	}
 
 	conn, err := s.connThroughTunnel(chanTransportDialReq, string(dr))
 	if err != nil {
+		agentConn.Close()
 		return nil, trace.Wrap(err)
 	}
 

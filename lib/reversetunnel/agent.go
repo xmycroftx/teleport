@@ -140,8 +140,13 @@ type Agent struct {
 	// is currently connected to
 	principals []string
 
-	agents        map[string]agent.Agent
+	// agents is a map of agents forwarded from the remote site.
+	agents map[string]agent.Agent
+	// agentChannels are the SSH channels over which communication with the
+	// agent occurs.
 	agentChannels map[string]ssh.Channel
+	// agentsMu protects the agents and agentChannels maps from concurrent access.
+	agentsMu sync.Mutex
 }
 
 // NewAgent returns a new reverse tunnel agent
@@ -393,8 +398,10 @@ func (a *Agent) proxyTransport(ch ssh.Channel, reqC <-chan *ssh.Request) {
 func (a *Agent) processForwardReq(channel ssh.Channel, req *ssh.Request) {
 	agentId := string(req.Payload)
 
+	a.agentsMu.Lock()
 	a.agents[agentId] = agent.NewClient(channel)
 	a.agentChannels[agentId] = channel
+	a.agentsMu.Unlock()
 
 	// if requested, tell the other side that agent has been forwarded
 	if req.WantReply {
@@ -447,11 +454,13 @@ func (a *Agent) processTransportDialReq(ch ssh.Channel, req *ssh.Request) {
 			return
 		}
 
-		// create a remote server and serve a single ssh connections on it
+		// create a remote server and serve a single ssh connections on it. note the
+		// source address here doesn't matter because the remotesite on the other
+		// side will wrap connection with the correct source address.
 		serverConfig := forward.ServerConfig{
 			AuthClient:      a.Client,
 			UserAgent:       userAgent,
-			Source:          "127.0.0.1:1234", // TODO(russjones)
+			Source:          "0.0.0.0:0",
 			Destination:     server,
 			HostCertificate: hostCertificate,
 		}
@@ -520,6 +529,10 @@ func (a *Agent) closeAgent(ch ssh.Channel, req *ssh.Request, server string, agen
 			replyError(ch, req, trace.Wrap(err))
 			return
 		}
+
+		a.agentsMu.Lock()
+		defer a.agentsMu.Unlock()
+
 		delete(a.agentChannels, agentId)
 		delete(a.agents, agentId)
 	}
