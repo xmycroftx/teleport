@@ -121,6 +121,13 @@ func (s *SrvSuite) SetUpTest(c *C) {
 		Access:    s.access,
 	})
 
+	clusterConfig, err := services.NewClusterConfig(services.ClusterConfigSpecV3{
+		SessionRecording: services.RecordAtNode,
+	})
+	c.Assert(err, IsNil)
+	err = s.a.SetClusterConfig(clusterConfig)
+	c.Assert(err, IsNil)
+
 	// set cluster name
 	clusterName, err := services.NewClusterName(services.ClusterNameSpecV2{
 		ClusterName: s.domainName,
@@ -160,7 +167,7 @@ func (s *SrvSuite) SetUpTest(c *C) {
 	// set up host private key and certificate
 	hpriv, hpub, err := s.a.GenerateKeyPair("")
 	c.Assert(err, IsNil)
-	hcert, err := s.a.GenerateHostCert(hpub, hostID, s.domainName, s.domainName, teleport.Roles{teleport.RoleAdmin}, 0)
+	hcert, err := s.a.GenerateHostCert(hpub, hostID, s.domainName, nil, s.domainName, teleport.Roles{teleport.RoleAdmin}, 0)
 	c.Assert(err, IsNil)
 
 	// set up user CA and set up a user that has access to the server
@@ -257,10 +264,6 @@ func (s *SrvSuite) TestAgentForwardPermission(c *C) {
 
 // TestAgentForward tests agent forwarding via unix sockets
 func (s *SrvSuite) TestAgentForward(c *C) {
-	se, err := s.clt.NewSession()
-	c.Assert(err, IsNil)
-	defer se.Close()
-
 	roleName := services.RoleNameForUser(s.user)
 	role, err := s.a.GetRole(roleName)
 	c.Assert(err, IsNil)
@@ -269,6 +272,10 @@ func (s *SrvSuite) TestAgentForward(c *C) {
 	role.SetOptions(roleOptions)
 	err = s.a.UpsertRole(role, backend.Forever)
 	c.Assert(err, IsNil)
+
+	se, err := s.clt.NewSession()
+	c.Assert(err, IsNil)
+	defer se.Close()
 
 	err = agent.RequestAgentForwarding(se)
 	c.Assert(err, IsNil)
@@ -497,8 +504,10 @@ func (s *SrvSuite) TestProxyReverseTunnel(c *C) {
 		ID:                    s.domainName,
 		ListenAddr:            reverseTunnelAddress,
 		HostSigners:           []ssh.Signer{s.signer},
-		AccessPoint:           s.roleAuth,
+		LocalAuthClient:       s.roleAuth,
+		LocalAccessPoint:      s.roleAuth,
 		NewCachingAccessPoint: state.NoCache,
+		DirectClusters:        []reversetunnel.DirectCluster{{Name: s.domainName, Client: s.roleAuth}},
 	})
 	c.Assert(err, IsNil)
 	c.Assert(reverseTunnelServer.Start(), IsNil)
@@ -638,10 +647,14 @@ func (s *SrvSuite) TestProxyReverseTunnel(c *C) {
 	var sites []services.Site
 	c.Assert(json.Unmarshal(stdout.Bytes(), &sites), IsNil)
 	c.Assert(sites, NotNil)
-	c.Assert(sites, HasLen, 1)
+	c.Assert(sites, HasLen, 2)
 	c.Assert(sites[0].Name, Equals, "localhost")
 	c.Assert(sites[0].Status, Equals, "online")
+	c.Assert(sites[1].Name, Equals, "localhost")
+	c.Assert(sites[1].Status, Equals, "online")
+
 	c.Assert(time.Since(sites[0].LastConnected).Seconds() < 5, Equals, true)
+	c.Assert(time.Since(sites[1].LastConnected).Seconds() < 5, Equals, true)
 
 	err = tunClt.DeleteReverseTunnel(s.domainName)
 	c.Assert(err, IsNil)
@@ -663,8 +676,10 @@ func (s *SrvSuite) TestProxyRoundRobin(c *C) {
 		ID:                    s.domainName,
 		ListenAddr:            reverseTunnelAddress,
 		HostSigners:           []ssh.Signer{s.signer},
-		AccessPoint:           s.roleAuth,
+		LocalAuthClient:       s.roleAuth,
+		LocalAccessPoint:      s.roleAuth,
 		NewCachingAccessPoint: state.NoCache,
+		DirectClusters:        []reversetunnel.DirectCluster{{Name: s.domainName, Client: s.roleAuth}},
 	})
 	c.Assert(err, IsNil)
 
@@ -765,7 +780,8 @@ func (s *SrvSuite) TestProxyDirectAccess(c *C) {
 		ID:                    s.domainName,
 		ListenAddr:            reverseTunnelAddress,
 		HostSigners:           []ssh.Signer{s.signer},
-		AccessPoint:           s.roleAuth,
+		LocalAuthClient:       s.roleAuth,
+		LocalAccessPoint:      s.roleAuth,
 		NewCachingAccessPoint: state.NoCache,
 		DirectClusters:        []reversetunnel.DirectCluster{{Name: s.domainName, Client: s.roleAuth}},
 	})
@@ -965,12 +981,6 @@ func (s *SrvSuite) TestServerAliveInterval(c *C) {
 // TestGlobalRequestRecordingProxy simulates sending a global out-of-band
 // recording-proxy@teleport.com request.
 func (s *SrvSuite) TestGlobalRequestRecordingProxy(c *C) {
-	// send request, since no cluster config is set, we should reply false to
-	// this request
-	ok, _, err := s.clt.SendRequest(teleport.RecordingProxyReqType, true, nil)
-	c.Assert(err, IsNil)
-	c.Assert(ok, Equals, false)
-
 	// set cluster config to record at the node
 	clusterConfig, err := services.NewClusterConfig(services.ClusterConfigSpecV3{
 		SessionRecording: services.RecordAtNode,
@@ -1055,7 +1065,7 @@ func newUpack(username string, allowedLogins []string, a *auth.AuthServer) (*upa
 		return nil, trace.Wrap(err)
 	}
 
-	ucert, err := a.GenerateUserCert(upub, user, allowedLogins, 0, true, teleport.CompatibilityNone)
+	ucert, err := a.GenerateUserCert(upub, user, allowedLogins, 0, true, true, teleport.CompatibilityNone)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

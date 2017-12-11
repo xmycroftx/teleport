@@ -79,6 +79,7 @@ func (s *APISuite) SetUpTest(c *C) {
 	s.a = NewAuthServer(&InitConfig{
 		Backend:   s.bk,
 		Authority: authority.New(),
+		AuditLog:  s.alog,
 	})
 	s.sessions, err = session.New(s.bk)
 	c.Assert(err, IsNil)
@@ -242,8 +243,8 @@ func (s *APISuite) TestGenerateKeysAndCerts(c *C) {
 
 	// make sure we can parse the private and public key
 	cert, err := s.clt.GenerateHostCert(pub,
-		"00000000-0000-0000-0000-000000000000", "localhost", "localhost",
-		teleport.Roles{teleport.RoleNode}, time.Hour)
+		"00000000-0000-0000-0000-000000000000", "localhost", nil,
+		"localhost", teleport.Roles{teleport.RoleNode}, time.Hour)
 	c.Assert(err, IsNil)
 
 	_, _, _, _, err = ssh.ParseAuthorizedKey(cert)

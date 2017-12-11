@@ -9,13 +9,14 @@ import (
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/defaults"
+	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/utils"
-	"github.com/gravitational/trace"
 
 	"github.com/coreos/go-oidc/jose"
 	"github.com/coreos/go-oidc/oauth2"
 	"github.com/coreos/go-oidc/oidc"
+	"github.com/gravitational/trace"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -217,7 +218,14 @@ func (a *AuthServer) ValidateOIDCAuthCallback(q url.Values) (*OIDCAuthResponse, 
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
-		cert, err := a.GenerateUserCert(req.PublicKey, user, allowedLogins, certTTL, roles.CanForwardAgents(), req.Compatibility)
+		cert, err := a.GenerateUserCert(
+			req.PublicKey,
+			user,
+			allowedLogins,
+			certTTL,
+			roles.CanForwardAgents(),
+			roles.CanPortForward(),
+			req.Compatibility)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -231,7 +239,10 @@ func (a *AuthServer) ValidateOIDCAuthCallback(q url.Values) (*OIDCAuthResponse, 
 			response.HostSigners = append(response.HostSigners, authority)
 		}
 	}
-
+	a.EmitAuditEvent(events.UserLoginEvent, events.EventFields{
+		events.EventUser:   user.GetName(),
+		events.LoginMethod: events.LoginMethodOIDC,
+	})
 	return response, nil
 }
 

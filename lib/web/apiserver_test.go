@@ -253,8 +253,9 @@ func (s *WebSuite) SetUpTest(c *C) {
 	// set up host private key and certificate
 	hpriv, hpub, err := s.authServer.GenerateKeyPair("")
 	c.Assert(err, IsNil)
-	hcert, err := s.authServer.GenerateHostCert(
-		hpub, hostID, s.domainName, s.domainName, teleport.Roles{teleport.RoleAdmin}, 0)
+	hcert, err := s.authServer.GenerateHostCert(hpub,
+		hostID, s.domainName, nil,
+		s.domainName, teleport.Roles{teleport.RoleAdmin}, 0)
 	c.Assert(err, IsNil)
 
 	// set up user CA and set up a user that has access to the server
@@ -295,7 +296,8 @@ func (s *WebSuite) SetUpTest(c *C) {
 			Addr:        fmt.Sprintf("%v:0", s.domainName),
 		},
 		HostSigners:           []ssh.Signer{s.signer},
-		AccessPoint:           s.roleAuth,
+		LocalAuthClient:       s.roleAuth,
+		LocalAccessPoint:      s.roleAuth,
 		NewCachingAccessPoint: state.NoCache,
 		DirectClusters:        []reversetunnel.DirectCluster{{Name: s.domainName, Client: s.roleAuth}},
 	})
@@ -387,7 +389,7 @@ func (s *WebSuite) TearDownTest(c *C) {
 }
 
 func (s *WebSuite) TestNewUser(c *C) {
-	token, err := s.roleAuth.CreateSignupToken(services.UserV1{Name: "bob", AllowedLogins: []string{s.user}})
+	token, err := s.roleAuth.CreateSignupToken(services.UserV1{Name: "bob", AllowedLogins: []string{s.user}}, 0)
 	c.Assert(err, IsNil)
 
 	tokens, err := s.roleAuth.GetTokens()
@@ -1218,7 +1220,7 @@ func (s *WebSuite) TestNewU2FUser(c *C) {
 	err = s.authServer.SetAuthPreference(cap)
 	c.Assert(err, IsNil)
 
-	token, err := s.roleAuth.CreateSignupToken(services.UserV1{Name: "bob", AllowedLogins: []string{s.user}})
+	token, err := s.roleAuth.CreateSignupToken(services.UserV1{Name: "bob", AllowedLogins: []string{s.user}}, 0)
 	c.Assert(err, IsNil)
 
 	tokens, err := s.roleAuth.GetTokens()
@@ -1294,7 +1296,7 @@ func (s *WebSuite) TestU2FLogin(c *C) {
 	err = s.authServer.SetAuthPreference(cap)
 	c.Assert(err, IsNil)
 
-	token, err := s.roleAuth.CreateSignupToken(services.UserV1{Name: "bob", AllowedLogins: []string{s.user}})
+	token, err := s.roleAuth.CreateSignupToken(services.UserV1{Name: "bob", AllowedLogins: []string{s.user}}, 0)
 	c.Assert(err, IsNil)
 
 	u2fRegReq, err := s.roleAuth.GetSignupU2FRegisterRequest(token)

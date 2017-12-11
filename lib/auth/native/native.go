@@ -150,7 +150,14 @@ func (n *nauth) GenerateHostCert(c services.HostCertParams) ([]byte, error) {
 		return nil, trace.Wrap(err)
 	}
 
+	// build a valid list of principals from the HostID and NodeName and then
+	// add in any additional principals passed in.
 	principals := BuildPrincipals(c.HostID, c.NodeName, c.ClusterName, c.Roles)
+	principals = append(principals, c.Principals...)
+	if len(principals) == 0 {
+		return nil, trace.BadParameter("no principals provided: %v, %v, %v",
+			c.HostID, c.NodeName, c.Principals)
+	}
 
 	// create certificate
 	validBefore := uint64(ssh.CertTimeInfinity)
@@ -208,6 +215,9 @@ func (n *nauth) GenerateUserCert(c services.UserCertParams) ([]byte, error) {
 	if c.PermitAgentForwarding {
 		cert.Permissions.Extensions[teleport.CertExtensionPermitAgentForwarding] = ""
 	}
+	if !c.PermitPortForwarding {
+		delete(cert.Permissions.Extensions, teleport.CertExtensionPermitPortForwarding)
+	}
 	if len(c.Roles) != 0 {
 		// if we are requesting a certificate with support for older versions of OpenSSH
 		// don't add roles to certificate extensions, due to a bug in <= OpenSSH 7.1
@@ -240,6 +250,11 @@ func BuildPrincipals(hostID string, nodeName string, clusterName string, roles t
 	// verify changing this won't break older clients.
 	if roles.Include(teleport.RoleAdmin) {
 		return []string{hostID}
+	}
+
+	// if no hostID was passed it, the user might be specifying an exact list of principals
+	if hostID == "" {
+		return []string{}
 	}
 
 	// always include the hostID, this is what teleport uses internally to find nodes

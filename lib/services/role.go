@@ -19,6 +19,7 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -90,7 +91,8 @@ func NewAdminRole() Role {
 		},
 		Spec: RoleSpecV3{
 			Options: RoleOptions{
-				MaxSessionTTL: NewDuration(defaults.MaxCertDuration),
+				MaxSessionTTL:  NewDuration(defaults.MaxCertDuration),
+				PortForwarding: true,
 			},
 			Allow: RoleConditions{
 				Namespaces: []string{defaults.Namespace},
@@ -136,7 +138,8 @@ func RoleForUser(u User) Role {
 		},
 		Spec: RoleSpecV3{
 			Options: RoleOptions{
-				MaxSessionTTL: NewDuration(defaults.MaxCertDuration),
+				MaxSessionTTL:  NewDuration(defaults.MaxCertDuration),
+				PortForwarding: true,
 			},
 			Allow: RoleConditions{
 				Namespaces: []string{defaults.Namespace},
@@ -208,6 +211,10 @@ const (
 
 	// MaxSessionTTL defines how long a SSH session can last for.
 	MaxSessionTTL = "max_session_ttl"
+
+	// PortForwarding defines if the certificate will have "permit-port-forwarding"
+	// in the certificate.
+	PortForwarding = "port_forwarding"
 )
 
 const (
@@ -487,7 +494,8 @@ func (r *RoleV3) CheckAndSetDefaults() error {
 	// make sure we have defaults for all fields
 	if r.Spec.Options == nil {
 		r.Spec.Options = map[string]interface{}{
-			MaxSessionTTL: NewDuration(defaults.MaxCertDuration),
+			MaxSessionTTL:  NewDuration(defaults.MaxCertDuration),
+			PortForwarding: true,
 		}
 	}
 	if r.Spec.Allow.Namespaces == nil {
@@ -538,7 +546,18 @@ func (r *RoleV3) CheckAndSetDefaults() error {
 			return trace.BadParameter("selector *:<val> is not supported")
 		}
 	}
-
+	for i := range r.Spec.Allow.Rules {
+		err := r.Spec.Allow.Rules[i].CheckAndSetDefaults()
+		if err != nil {
+			return trace.BadParameter("failed to process 'allow' rule %v: %v", i, err)
+		}
+	}
+	for i := range r.Spec.Deny.Rules {
+		err := r.Spec.Deny.Rules[i].CheckAndSetDefaults()
+		if err != nil {
+			return trace.BadParameter("failed to process 'deny' rule %v: %v", i, err)
+		}
+	}
 	return nil
 }
 
@@ -714,6 +733,83 @@ type Rule struct {
 	Actions []string `json:"actions,omitempty"`
 }
 
+// CheckAndSetDefaults checks and sets defaults for this rule
+func (r *Rule) CheckAndSetDefaults() error {
+	if len(r.Resources) == 0 {
+		return trace.BadParameter("missing resources to match")
+	}
+	if len(r.Verbs) == 0 {
+		return trace.BadParameter("missing verbs")
+	}
+	if len(r.Where) != 0 {
+		parser, err := GetWhereParserFn()(&Context{})
+		if err != nil {
+			return trace.Wrap(err)
+		}
+		_, err = parser.Parse(r.Where)
+		if err != nil {
+			return trace.BadParameter("could not parse 'where' rule: %q, error: %v", r.Where, err)
+		}
+	}
+	if len(r.Actions) != 0 {
+		parser, err := GetActionsParserFn()(&Context{})
+		if err != nil {
+			return trace.Wrap(err)
+		}
+		for i, action := range r.Actions {
+			_, err = parser.Parse(action)
+			if err != nil {
+				return trace.BadParameter("could not parse action %v %q, error: %v", i, action, err)
+			}
+		}
+	}
+	return nil
+}
+
+// score is a sorting score of the rule, the more the score, the more
+// specific the rule is
+func (r *Rule) score() int {
+	score := 0
+	// wilcard rules are less specific
+	if utils.SliceContainsStr(r.Resources, Wildcard) {
+		score -= 4
+	} else if len(r.Resources) == 1 {
+		// rules that match specific resource are more specific than
+		// fields that match several resources
+		score += 2
+	}
+	// rules that have wilcard verbs are less specific
+	if utils.SliceContainsStr(r.Verbs, Wildcard) {
+		score -= 2
+	}
+	// rules that supply 'where' or 'actions' are more specific
+	// having 'where' or 'actions' is more important than
+	// whether the rules are wildcard or not, so here we have +8 vs
+	// -4 and -2 score penalty for wildcards in resources and verbs
+	if len(r.Where) > 0 {
+		score += 8
+	}
+	// rules featuring actions are more specific
+	if len(r.Actions) > 0 {
+		score += 8
+	}
+	return score
+}
+
+// IsMoreSpecificThan returns true if the rule is more specific than the other.
+//
+// * nRule matching wildcard resource is less specific
+// than same rule matching specific resource.
+// * Rule that has wildcard verbs is less specific
+// than the same rules matching specific verb.
+// * Rule that has where section is more specific
+// than the same rule without where section.
+// * Rule that has actions list is more specific than
+// rule without actions list.
+func (r *Rule) IsMoreSpecificThan(o Rule) bool {
+	return r.score() > o.score()
+}
+
 // MatchesWhere returns true if Where rule matches
 // Empty Where block always matches
 func (r *Rule) MatchesWhere(parser predicate.Parser) (bool, error) {
@@ -758,7 +854,6 @@ func (r *Rule) HasVerb(verb string) bool {
 			}
 			continue
 		}
-
 		if v == verb {
 			return true
 		}
@@ -787,13 +882,23 @@ func (r *Rule) Equals(other Rule) bool {
 type RuleSet map[string][]Rule
 
 // MatchRule tests if the resource name and verb are in a given list of rules.
+// More specific rules will be matched first. See Rule.IsMoreSpecificThan
+// for exact specs on whether the rule is more or less specific.
+//
+// Specifying order solves the problem on having multiple rules, e.g. one wildcard
+// rule can override more specific rules with 'where' sections that can have
+// 'actions' lists with side effects that will not be triggered otherwise.
+//
 func (set RuleSet) Match(whereParser predicate.Parser, actionsParser predicate.Parser, resource string, verb string) (bool, error) {
 	// empty set matches nothing
 	if len(set) == 0 {
 		return false, nil
 	}
-	// check for wildcard resource matcher
-	for _, rule := range set[Wildcard] {
+
+	// check for matching resource by name
+	// the most specific rule should win
+	rules := set[resource]
+	for _, rule := range rules {
 		match, err := rule.MatchesWhere(whereParser)
 		if err != nil {
 			return false, trace.Wrap(err)
@@ -806,8 +911,8 @@ func (set RuleSet) Match(whereParser predicate.Parser, actionsParser predicate.P
 		}
 	}
 
-	// check for matching resource by name
-	for _, rule := range set[resource] {
+	// check for wildcard resource matcher
+	for _, rule := range set[Wildcard] {
 		match, err := rule.MatchesWhere(whereParser)
 		if err != nil {
 			return false, trace.Wrap(err)
@@ -845,6 +950,15 @@ func MakeRuleSet(rules []Rule) RuleSet {
 				set[resource] = rules
 			}
 		}
+	}
+	for resource := range set {
+		rules := set[resource]
+		// sort rules by most specific rule, the rule that has actions
+		// is more specific than the one that has no actions
+		sort.Slice(rules, func(i, j int) bool {
+			return rules[i].IsMoreSpecificThan(rules[j])
+		})
+		set[resource] = rules
 	}
 	return set
 }
@@ -1043,7 +1157,8 @@ func (r *RoleV2) V3() *RoleV3 {
 		Metadata: r.Metadata,
 		Spec: RoleSpecV3{
 			Options: RoleOptions{
-				MaxSessionTTL: r.GetMaxSessionTTL(),
+				MaxSessionTTL:  r.GetMaxSessionTTL(),
+				PortForwarding: true,
 			},
 			Allow: RoleConditions{
 				Logins:     r.GetLogins(),
@@ -1132,6 +1247,9 @@ type AccessChecker interface {
 
 	// CanForwardAgents returns true if this role set offers capability to forward agents
 	CanForwardAgents() bool
+
+	// CanPortForward returns true if this RoleSet can forward ports.
+	CanPortForward() bool
 }
 
 // FromSpec returns new RoleSet created from spec
@@ -1342,6 +1460,20 @@ func (set RoleSet) CanForwardAgents() bool {
 			return false
 		}
 		if forwardAgent == true {
+			return true
+		}
+	}
+	return false
+}
+
+// CanPortForward returns true if a role in the RoleSet allows port forwarding.
+func (set RoleSet) CanPortForward() bool {
+	for _, role := range set {
+		portForwarding, err := role.GetOptions().GetBoolean(PortForwarding)
+		if err != nil {
+			return false
+		}
+		if portForwarding == true {
 			return true
 		}
 	}

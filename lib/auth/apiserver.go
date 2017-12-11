@@ -34,10 +34,9 @@ import (
 	"github.com/gravitational/teleport/lib/utils"
 
 	"github.com/gravitational/trace"
+	"github.com/jonboulle/clockwork"
 	"github.com/julienschmidt/httprouter"
 	log "github.com/sirupsen/logrus"
-
-	"github.com/jonboulle/clockwork"
 	"github.com/tstranex/u2f"
 )
 
@@ -200,6 +199,10 @@ func NewAPIServer(config *APIConfig) http.Handler {
 	srv.GET("/:version/events", srv.withAuth(srv.searchEvents))
 	srv.GET("/:version/events/session", srv.withAuth(srv.searchSessionEvents))
 
+	if plugin := GetPlugin(); plugin != nil {
+		plugin.AddHandlers(&srv)
+	}
+
 	return httplib.RewritePaths(&srv.Router,
 		httplib.Rewrite("/v1/nodes", "/v1/namespaces/default/nodes"),
 		httplib.Rewrite("/v1/sessions", "/v1/namespaces/default/sessions"),
@@ -230,7 +233,7 @@ func (s *APIServer) withAuth(handler HandlerWithAuthFunc) httprouter.Handle {
 			user:       authContext.User,
 			checker:    authContext.Checker,
 			sessions:   s.SessionService,
-			alog:       s.AuditLog,
+			alog:       s.AuthServer.IAuditLog,
 		}
 		version := p.ByName("version")
 		if version == "" {
@@ -735,6 +738,7 @@ type generateHostCertReq struct {
 	Key         []byte         `json:"key"`
 	HostID      string         `json:"hostname"`
 	NodeName    string         `json:"node_name"`
+	Principals  []string       `json:"principals"`
 	ClusterName string         `json:"auth_domain"`
 	Roles       teleport.Roles `json:"roles"`
 	TTL         time.Duration  `json:"ttl"`
@@ -746,7 +750,7 @@ func (s *APIServer) generateHostCert(auth ClientI, w http.ResponseWriter, r *htt
 		return nil, trace.Wrap(err)
 	}
 
-	cert, err := auth.GenerateHostCert(req.Key, req.HostID, req.NodeName, req.ClusterName, req.Roles, req.TTL)
+	cert, err := auth.GenerateHostCert(req.Key, req.HostID, req.NodeName, req.Principals, req.ClusterName, req.Roles, req.TTL)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -1065,6 +1069,7 @@ func (s *APIServer) getSignupU2FRegisterRequest(auth ClientI, w http.ResponseWri
 
 type createSignupTokenReq struct {
 	User services.UserV1 `json:"user"`
+	TTL  time.Duration   `json:"ttl"`
 }
 
 func (s *APIServer) createSignupToken(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {
@@ -1078,7 +1083,7 @@ func (s *APIServer) createSignupToken(auth ClientI, w http.ResponseWriter, r *ht
 		return nil, trace.Wrap(err)
 	}
 
-	token, err := auth.CreateSignupToken(req.User)
+	token, err := auth.CreateSignupToken(req.User, req.TTL)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

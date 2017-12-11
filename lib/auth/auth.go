@@ -33,12 +33,13 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/defaults"
+	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/services/local"
 	"github.com/gravitational/teleport/lib/utils"
-	"github.com/gravitational/trace"
 
 	"github.com/coreos/go-oidc/oidc"
+	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
 	saml2 "github.com/russellhaering/gosaml2"
 	log "github.com/sirupsen/logrus"
@@ -87,6 +88,9 @@ func NewAuthServer(cfg *InitConfig, opts ...AuthServerOption) *AuthServer {
 	if cfg.ClusterConfiguration == nil {
 		cfg.ClusterConfiguration = local.NewClusterConfigurationService(cfg.Backend)
 	}
+	if cfg.AuditLog == nil {
+		cfg.AuditLog = events.NewDiscardAuditLog()
+	}
 	closeCtx, cancelFunc := context.WithCancel(context.TODO())
 	as := AuthServer{
 		Entry: log.WithFields(log.Fields{
@@ -101,6 +105,7 @@ func NewAuthServer(cfg *InitConfig, opts ...AuthServerOption) *AuthServer {
 		Access:               cfg.Access,
 		AuthServiceName:      cfg.AuthServiceName,
 		ClusterConfiguration: cfg.ClusterConfiguration,
+		IAuditLog:            cfg.AuditLog,
 		oidcClients:          make(map[string]*oidcClient),
 		samlProviders:        make(map[string]*samlProvider),
 		cancelFunc:           cancelFunc,
@@ -157,6 +162,7 @@ type AuthServer struct {
 	services.Identity
 	services.Access
 	services.ClusterConfiguration
+	events.IAuditLog
 }
 
 func (a *AuthServer) Close() error {
@@ -172,6 +178,11 @@ func (a *AuthServer) SetClock(clock clockwork.Clock) {
 	a.clock = clock
 }
 
+// SetAuditLog sets the server's audit log
+func (a *AuthServer) SetAuditLog(auditLog events.IAuditLog) {
+	a.IAuditLog = auditLog
+}
+
 // GetDomainName returns the domain name that identifies this authority server.
 // Also known as "cluster name"
 func (a *AuthServer) GetDomainName() (string, error) {
@@ -185,7 +196,7 @@ func (a *AuthServer) GetDomainName() (string, error) {
 
 // GenerateHostCert uses the private key of the CA to sign the public key of the host
 // (along with meta data like host ID, node name, roles, and ttl) to generate a host certificate.
-func (s *AuthServer) GenerateHostCert(hostPublicKey []byte, hostID, nodeName, clusterName string, roles teleport.Roles, ttl time.Duration) ([]byte, error) {
+func (s *AuthServer) GenerateHostCert(hostPublicKey []byte, hostID, nodeName string, principals []string, clusterName string, roles teleport.Roles, ttl time.Duration) ([]byte, error) {
 	domainName, err := s.GetDomainName()
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -212,6 +223,7 @@ func (s *AuthServer) GenerateHostCert(hostPublicKey []byte, hostID, nodeName, cl
 		PublicHostKey:       hostPublicKey,
 		HostID:              hostID,
 		NodeName:            nodeName,
+		Principals:          principals,
 		ClusterName:         clusterName,
 		Roles:               roles,
 		TTL:                 ttl,
@@ -220,12 +232,11 @@ func (s *AuthServer) GenerateHostCert(hostPublicKey []byte, hostID, nodeName, cl
 
 // GenerateUserCert generates user certificate, it takes pkey as a signing
 // private key (user certificate authority)
-func (s *AuthServer) GenerateUserCert(key []byte, user services.User, allowedLogins []string, ttl time.Duration, canForwardAgents bool, compatibility string) ([]byte, error) {
+func (s *AuthServer) GenerateUserCert(key []byte, user services.User, allowedLogins []string, ttl time.Duration, canForwardAgents bool, canPortForward bool, compatibility string) ([]byte, error) {
 	domainName, err := s.GetDomainName()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
 	ca, err := s.Trust.GetCertAuthority(services.CertAuthID{
 		Type:       services.UserCA,
 		DomainName: domainName,
@@ -237,7 +248,7 @@ func (s *AuthServer) GenerateUserCert(key []byte, user services.User, allowedLog
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return s.Authority.GenerateUserCert(services.UserCertParams{
+	cert, err := s.Authority.GenerateUserCert(services.UserCertParams{
 		PrivateCASigningKey:   privateKey,
 		PublicUserKey:         key,
 		Username:              user.GetName(),
@@ -246,7 +257,16 @@ func (s *AuthServer) GenerateUserCert(key []byte, user services.User, allowedLog
 		Roles:                 user.GetRoles(),
 		Compatibility:         compatibility,
 		PermitAgentForwarding: canForwardAgents,
+		PermitPortForwarding:  canPortForward,
 	})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	s.EmitAuditEvent(events.UserLoginEvent, events.EventFields{
+		events.EventUser:   user.GetName(),
+		events.LoginMethod: events.LoginMethodLocal,
+	})
+	return cert, nil
 }
 
 // WithUserLock executes function authenticateFn that performs user authentication
@@ -315,6 +335,10 @@ func (s *AuthServer) SignIn(user string, password []byte) (services.WebSession, 
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+	s.EmitAuditEvent(events.UserLoginEvent, events.EventFields{
+		events.EventUser:   user,
+		events.LoginMethod: events.LoginMethodLocal,
+	})
 	return s.PreAuthenticatedSignIn(user)
 }
 
@@ -489,7 +513,7 @@ func (s *AuthServer) GenerateServerKeys(hostID string, nodeName string, roles te
 	}
 
 	// generate host certificate with an infinite ttl
-	c, err := s.GenerateHostCert(pub, hostID, nodeName, domainName, roles, 0)
+	c, err := s.GenerateHostCert(pub, hostID, nodeName, nil, domainName, roles, 0)
 	if err != nil {
 		log.Warningf("[AUTH] Node %q [%v] can not join: certificate generation error: %v", nodeName, hostID, err)
 		return nil, trace.Wrap(err)
@@ -720,7 +744,8 @@ func (s *AuthServer) NewWebSession(userName string) (services.WebSession, error)
 		AllowedLogins:       allowedLogins,
 		TTL:                 bearerTokenTTL,
 		PermitAgentForwarding: roles.CanForwardAgents(),
-		Roles: user.GetRoles(),
+		PermitPortForwarding:  roles.CanPortForward(),
+		Roles:                 user.GetRoles(),
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)

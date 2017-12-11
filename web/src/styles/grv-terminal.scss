@@ -17,10 +17,9 @@ limitations under the License.
 .grv-terminal {
  height: 100%;
  width: 100%;
- //font-size: 14px;
 
  .terminal{
-   font-family: "DejaVu Sans Mono", "Liberation Mono", "Andale Mono", Consolas, monospace;
+   font-family: $grv-font-mono;
    border: none;
    font-size: inherit;
    line-height: normal;
@@ -32,6 +31,24 @@ limitations under the License.
 
    * {
      font-weight: normal!important;
-   } 
+   }
  }
+}
+
+.--isLinux {
+  .terminal{
+    font-family: $grv-font-mono-linux;
+  }
+}
+
+.--isWin {
+  .terminal{
+    font-family: $grv-font-mono-win;
+  }
+}
+
+.--isMac {
+  .terminal{
+    font-family: $grv-font-mono-mac;
+  }
 }
