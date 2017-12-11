@@ -1231,7 +1231,7 @@ func (c *Client) ValidateSAMLResponse(re string) (*SAMLAuthResponse, error) {
 }
 
 func (c *Client) CreateGithubConnector(connector services.GithubConnector) error {
-	bytes, err := services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector)
+	bytes, err := services.GetGithubConnectorMarshaler().Marshal(connector)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -1245,7 +1245,7 @@ func (c *Client) CreateGithubConnector(connector services.GithubConnector) error
 }
 
 func (c *Client) UpsertGithubConnector(connector services.GithubConnector) error {
-	bytes, err := services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector)
+	bytes, err := services.GetGithubConnectorMarshaler().Marshal(connector)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -1271,7 +1271,7 @@ func (c *Client) GetGithubConnectors(withSecrets bool) ([]services.GithubConnect
 	}
 	connectors := make([]services.GithubConnector, len(items))
 	for i, raw := range items {
-		connector, err := services.GetGithubConnectorMarshaler().UnmarshalGithubConnector(raw)
+		connector, err := services.GetGithubConnectorMarshaler().Unmarshal(raw)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -1287,7 +1287,7 @@ func (c *Client) GetGithubConnector(id string, withSecrets bool) (services.Githu
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return services.GetGithubConnectorMarshaler().UnmarshalGithubConnector(out.Bytes())
+	return services.GetGithubConnectorMarshaler().Unmarshal(out.Bytes())
 }
 
 func (c *Client) DeleteGithubConnector(id string) error {

@@ -831,7 +831,7 @@ func (s *IdentityService) CreateGithubConnector(connector services.GithubConnect
 	if err := connector.CheckAndSetDefaults(); err != nil {
 		return trace.Wrap(err)
 	}
-	bytes, err := services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector)
+	bytes, err := services.GetGithubConnectorMarshaler().Marshal(connector)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -846,7 +846,7 @@ func (s *IdentityService) UpsertGithubConnector(connector services.GithubConnect
 	if err := connector.CheckAndSetDefaults(); err != nil {
 		return trace.Wrap(err)
 	}
-	bytes, err := services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector)
+	bytes, err := services.GetGithubConnectorMarshaler().Marshal(connector)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -884,7 +884,7 @@ func (s *IdentityService) GetGithubConnector(id string, withSecrets bool) (servi
 		}
 		return nil, trace.Wrap(err)
 	}
-	connector, err := services.GetGithubConnectorMarshaler().UnmarshalGithubConnector(bytes)
+	connector, err := services.GetGithubConnectorMarshaler().Unmarshal(bytes)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

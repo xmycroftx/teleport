@@ -21,8 +21,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gravitational/gravity/lib/defaults"
+	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/utils"
+
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
 )
@@ -34,6 +35,10 @@ type GithubConnector interface {
 	SetClientID(string)
 	GetClientSecret() string
 	SetClientSecret(string)
+	GetRedirectURL() string
+	SetRedirectURL(string)
+	GetGroupsToRoles() []GroupMapping
+	SetGroupsToRoles([]GroupMapping)
 }
 
 func NewGithubConnector(name string, spec GithubConnectorSpecV3) GithubConnector {
@@ -126,6 +131,22 @@ func (c *GithubConnectorV3) SetClientSecret(secret string) {
 	c.Spec.ClientSecret = secret
 }
 
+func (c *GithubConnectorV3) GetRedirectURL() string {
+	return c.Spec.RedirectURL
+}
+
+func (c *GithubConnectorV3) SetRedirectURL(redirectURL string) {
+	c.Spec.RedirectURL = redirectURL
+}
+
+func (c *GithubConnectorV3) GetGroupsToRoles() []GroupMapping {
+	return c.Spec.GroupsToRoles
+}
+
+func (c *GithubConnectorV3) SetGroupsToRoles(groupsToRoles []GroupMapping) {
+	c.Spec.GroupsToRoles = groupsToRoles
+}
+
 var githubConnectorMarshaler GithubConnectorMarshaler = &TeleportGithubConnectorMarshaler{}
 
 // SetGithubConnectorMarshaler sets Github connector marshaler
@@ -144,10 +165,10 @@ func GetGithubConnectorMarshaler() GithubConnectorMarshaler {
 
 // GithubConnectorMarshaler defines interface for Github connector marshaler
 type GithubConnectorMarshaler interface {
-	// UnmarshalGithubConnector unmarshals connector from binary representation
-	UnmarshalGithubConnector(bytes []byte) (GithubConnector, error)
-	// MarshalGithubConnector marshals connector to binary representation
-	MarshalGithubConnector(c GithubConnector, opts ...MarshalOption) ([]byte, error)
+	// Unmarshal unmarshals connector from binary representation
+	Unmarshal(bytes []byte) (GithubConnector, error)
+	// Marshal marshals connector to binary representation
+	Marshal(c GithubConnector, opts ...MarshalOption) ([]byte, error)
 }
 
 // GetGithubConnectorSchema returns schema for Github connector
@@ -158,7 +179,7 @@ func GetGithubConnectorSchema() string {
 type TeleportGithubConnectorMarshaler struct{}
 
 // UnmarshalGithubConnector unmarshals Github connector from JSON
-func (*TeleportGithubConnectorMarshaler) UnmarshalGithubConnector(bytes []byte) (GithubConnector, error) {
+func (*TeleportGithubConnectorMarshaler) Unmarshal(bytes []byte) (GithubConnector, error) {
 	var h ResourceHeader
 	if err := json.Unmarshal(bytes, &h); err != nil {
 		return nil, trace.Wrap(err)
@@ -179,7 +200,7 @@ func (*TeleportGithubConnectorMarshaler) UnmarshalGithubConnector(bytes []byte) 
 }
 
 // MarshalGithubConnector marshals Github connector to JSON
-func (*TeleportGithubConnectorMarshaler) MarshalGithubConnector(c GithubConnector, opts ...MarshalOption) ([]byte, error) {
+func (*TeleportGithubConnectorMarshaler) Marshal(c GithubConnector, opts ...MarshalOption) ([]byte, error) {
 	return json.Marshal(c)
 }
 

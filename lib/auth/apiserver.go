@@ -1439,7 +1439,7 @@ func (s *APIServer) createGithubConnector(auth ClientI, w http.ResponseWriter, r
 	if err := httplib.ReadJSON(r, &req); err != nil {
 		return nil, trace.Wrap(err)
 	}
-	connector, err := services.GetGithubConnectorMarshaler().UnmarshalGithubConnector(req.Connector)
+	connector, err := services.GetGithubConnectorMarshaler().Unmarshal(req.Connector)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -1458,7 +1458,7 @@ func (s *APIServer) upsertGithubConnector(auth ClientI, w http.ResponseWriter, r
 	if err := httplib.ReadJSON(r, &req); err != nil {
 		return nil, trace.Wrap(err)
 	}
-	connector, err := services.GetGithubConnectorMarshaler().UnmarshalGithubConnector(req.Connector)
+	connector, err := services.GetGithubConnectorMarshaler().Unmarshal(req.Connector)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -1479,7 +1479,7 @@ func (s *APIServer) getGithubConnectors(auth ClientI, w http.ResponseWriter, r *
 	}
 	items := make([]json.RawMessage, len(connectors))
 	for i, connector := range connectors {
-		bytes, err := services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector)
+		bytes, err := services.GetGithubConnectorMarshaler().Marshal(connector)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -1497,7 +1497,7 @@ func (s *APIServer) getGithubConnector(auth ClientI, w http.ResponseWriter, r *h
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return rawMessage(services.GetGithubConnectorMarshaler().MarshalGithubConnector(connector))
+	return rawMessage(services.GetGithubConnectorMarshaler().Marshal(connector))
 }
 
 func (s *APIServer) deleteGithubConnector(auth ClientI, w http.ResponseWriter, r *http.Request, p httprouter.Params, version string) (interface{}, error) {

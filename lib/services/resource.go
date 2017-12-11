@@ -387,6 +387,8 @@ func ParseShortcut(in string) (string, error) {
 		return KindOIDCConnector, nil
 	case "saml":
 		return KindSAMLConnector, nil
+	case "github":
+		return KindGithubConnector, nil
 	case "user", "users":
 		return KindUser, nil
 	case "cert_authorities", "cas":
