@@ -59,13 +59,16 @@ type Identity interface {
 	// GetUser returns a user by name
 	GetUser(user string) (User, error)
 
-	// GetUserByOIDCIdentity returns a user by it's specified OIDC Identity, returns first
+	// GetUserByOIDCIdentity returns a user by its specified OIDC Identity, returns first
 	// user specified with this identity
 	GetUserByOIDCIdentity(id ExternalIdentity) (User, error)
 
-	// GetUserBySAMLIdentity returns a user by it's specified OIDC Identity, returns first
+	// GetUserBySAMLIdentity returns a user by its specified OIDC Identity, returns first
 	// user specified with this identity
 	GetUserBySAMLIdentity(id ExternalIdentity) (User, error)
+
+	// GetUserByGithubIdentity returns a user by its specified Github identity
+	GetUserByGithubIdentity(id ExternalIdentity) (User, error)
 
 	// DeleteUser deletes a user with all the keys from the backend
 	DeleteUser(user string) error
@@ -193,6 +196,8 @@ type Identity interface {
 	GetGithubConnectors(withSecrets bool) ([]GithubConnector, error)
 	GetGithubConnector(id string, withSecrets bool) (GithubConnector, error)
 	DeleteGithubConnector(id string) error
+	CreateGithubAuthRequest(req GithubAuthRequest, ttl time.Duration) error
+	GetGithubAuthRequest(stateToken string) (*GithubAuthRequest, error)
 }
 
 // VerifyPassword makes sure password satisfies our requirements (relaxed),
@@ -256,6 +261,39 @@ func (i *ExternalIdentity) Check() error {
 	}
 	if i.Username == "" {
 		return trace.BadParameter("Username: missing username")
+	}
+	return nil
+}
+
+type GithubAuthRequest struct {
+	ConnectorID       string        `json:"connector_id"`
+	StateToken        string        `json:"state_token"`
+	CSRFToken         string        `json:"csrf_token"`
+	PublicKey         []byte        `json:"public_key"`
+	CertTTL           time.Duration `json:"cert_ttl"`
+	CheckUser         bool          `json:"check_user"`
+	CreateWebSession  bool          `json:"create_web_session"`
+	RedirectURL       string        `json:"redirect_url"`
+	ClientRedirectURL string        `json:"client_redirect_url"`
+	Compatibility     string        `json:"compatibility,omitempty"`
+}
+
+// Check makes sure the request is valid
+func (r *GithubAuthRequest) Check() error {
+	if r.ConnectorID == "" {
+		return trace.BadParameter("missing ConnectorID")
+	}
+	if r.StateToken == "" {
+		return trace.BadParameter("missing StateToken")
+	}
+	if len(r.PublicKey) != 0 {
+		_, _, _, _, err := ssh.ParseAuthorizedKey(r.PublicKey)
+		if err != nil {
+			return trace.BadParameter("bad PublicKey: %v", err)
+		}
+		if (r.CertTTL > defaults.MaxCertDuration) || (r.CertTTL < defaults.MinCertDuration) {
+			return trace.BadParameter("wrong CertTTL")
+		}
 	}
 	return nil
 }

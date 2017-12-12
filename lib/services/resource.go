@@ -68,11 +68,14 @@ const (
 	// KindGithub is Github connector resource
 	KindGithub = "github"
 
-	// KindOIDCRequest is oidc auth request resource
+	// KindOIDCRequest is OIDC auth request resource
 	KindOIDCRequest = "oidc_request"
 
-	// KindOIDCReques is saml auth request resource
+	// KindOIDCReques is SAML auth request resource
 	KindSAMLRequest = "saml_request"
+
+	// KindGithubRequest is Github auth request resource
+	KindGithubRequest = "github_request"
 
 	// KindSession is a recorded SSH session.
 	KindSession = "session"

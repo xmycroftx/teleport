@@ -39,6 +39,9 @@ type GithubConnector interface {
 	SetRedirectURL(string)
 	GetGroupsToRoles() []GroupMapping
 	SetGroupsToRoles([]GroupMapping)
+	GetOrgs() []string
+	GetDisplay() string
+	SetDisplay(string)
 }
 
 func NewGithubConnector(name string, spec GithubConnectorSpecV3) GithubConnector {
@@ -69,6 +72,7 @@ type GithubConnectorSpecV3 struct {
 	ClientSecret  string         `json:"client_secret"`
 	RedirectURL   string         `json:"redirect_url"`
 	GroupsToRoles []GroupMapping `json:"groups_to_roles"`
+	Display       string         `json:"display"`
 }
 
 type GroupMapping struct {
@@ -145,6 +149,22 @@ func (c *GithubConnectorV3) GetGroupsToRoles() []GroupMapping {
 
 func (c *GithubConnectorV3) SetGroupsToRoles(groupsToRoles []GroupMapping) {
 	c.Spec.GroupsToRoles = groupsToRoles
+}
+
+func (c *GithubConnectorV3) GetOrgs() []string {
+	var orgs []string
+	for _, mapping := range c.Spec.GroupsToRoles {
+		orgs = append(orgs, mapping.Organization)
+	}
+	return utils.Deduplicate(orgs)
+}
+
+func (c *GithubConnectorV3) GetDisplay() string {
+	return c.Spec.Display
+}
+
+func (c *GithubConnectorV3) SetDisplay(display string) {
+	c.Spec.Display = display
 }
 
 var githubConnectorMarshaler GithubConnectorMarshaler = &TeleportGithubConnectorMarshaler{}

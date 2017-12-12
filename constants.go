@@ -118,6 +118,9 @@ const (
 	// ConnectorSAML means connector type SAML
 	ConnectorSAML = "oidc"
 
+	// ConnectorGithub means connector type Github
+	ConnectorGithub = "github"
+
 	// DataDirParameterName is the name of the data dir configuration parameter passed
 	// to all backends during initialization
 	DataDirParameterName = "data_dir"
@@ -148,10 +151,10 @@ const (
 	// Local means authentication will happen locally within the Teleport cluster.
 	Local = "local"
 
-	// OIDC means authentication will happen remotly using an OIDC connector.
+	// OIDC means authentication will happen remotely using an OIDC connector.
 	OIDC = "oidc"
 
-	// SAML means authentication will happen remotly using an SAML connector.
+	// SAML means authentication will happen remotely using a SAML connector.
 	SAML = "saml"
 
 	// JSON means JSON serialization format

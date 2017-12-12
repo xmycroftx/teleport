@@ -1298,6 +1298,55 @@ func (c *Client) DeleteGithubConnector(id string) error {
 	return nil
 }
 
+func (c *Client) CreateGithubAuthRequest(req services.GithubAuthRequest) (*services.GithubAuthRequest, error) {
+	out, err := c.PostJSON(c.Endpoint("oidc", "requests", "create"),
+		createGithubAuthRequestReq{Req: req})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	var response services.GithubAuthRequest
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return &response, nil
+}
+
+// ValidateGithubAuthCallback validates Github auth callback returned from redirect
+func (c *Client) ValidateGithubAuthCallback(q url.Values) (*GithubAuthResponse, error) {
+	out, err := c.PostJSON(c.Endpoint("oidc", "requests", "validate"),
+		validateGithubAuthCallbackReq{Query: q})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	var rawResponse githubAuthRawResponse
+	if err := json.Unmarshal(out.Bytes(), &rawResponse); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	response := GithubAuthResponse{
+		Username: rawResponse.Username,
+		Identity: rawResponse.Identity,
+		Cert:     rawResponse.Cert,
+		Req:      rawResponse.Req,
+	}
+	if len(rawResponse.Session) != 0 {
+		session, err := services.GetWebSessionMarshaler().UnmarshalWebSession(
+			rawResponse.Session)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		response.Session = session
+	}
+	response.HostSigners = make([]services.CertAuthority, len(rawResponse.HostSigners))
+	for i, raw := range rawResponse.HostSigners {
+		ca, err := services.GetCertAuthorityMarshaler().UnmarshalCertAuthority(raw)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		response.HostSigners[i] = ca
+	}
+	return &response, nil
+}
+
 // EmitAuditEvent sends an auditable event to the auth server (part of evets.IAuditLog interface)
 func (c *Client) EmitAuditEvent(eventType string, fields events.EventFields) error {
 	_, err := c.PostJSON(c.Endpoint("events"), &auditEventReq{
@@ -1850,6 +1899,8 @@ type IdentityService interface {
 	GetGithubConnectors(withSecrets bool) ([]services.GithubConnector, error)
 	GetGithubConnector(id string, withSecrets bool) (services.GithubConnector, error)
 	DeleteGithubConnector(id string) error
+	CreateGithubAuthRequest(services.GithubAuthRequest) (*services.GithubAuthRequest, error)
+	ValidateGithubAuthCallback(q url.Values) (*GithubAuthResponse, error)
 
 	// GetU2FSignRequest generates request for user trying to authenticate with U2F token
 	GetU2FSignRequest(user string, password []byte) (*u2f.SignRequest, error)

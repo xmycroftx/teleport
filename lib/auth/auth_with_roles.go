@@ -692,6 +692,17 @@ func (a *AuthWithRoles) DeleteGithubConnector(id string) error {
 	return a.authServer.DeleteGithubConnector(id)
 }
 
+func (a *AuthWithRoles) CreateGithubAuthRequest(req services.GithubAuthRequest) (*services.GithubAuthRequest, error) {
+	if err := a.action(defaults.Namespace, services.KindGithubRequest, services.VerbCreate); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return a.authServer.CreateGithubAuthRequest(req)
+}
+
+func (a *AuthWithRoles) ValidateGithubAuthCallback(q url.Values) (*GithubAuthResponse, error) {
+	return a.authServer.ValidateGithubAuthCallback(q)
+}
+
 func (a *AuthWithRoles) EmitAuditEvent(eventType string, fields events.EventFields) error {
 	if err := a.action(defaults.Namespace, services.KindEvent, services.VerbCreate); err != nil {
 		return trace.Wrap(err)

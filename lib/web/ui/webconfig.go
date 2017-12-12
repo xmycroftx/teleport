@@ -36,8 +36,10 @@ type WebConfigAuthProvider struct {
 type WebConfigAuthSettings struct {
 	// SecondFactor is the type of second factor to use in authentication.
 	SecondFactor string `json:"second_factor,omitempty"`
-	// OIDC contains the OIDC Connectors
+	// OIDC contains OIDC connectors
 	OIDC []WebConfigAuthProvider `json:"oidc,omitempty"`
-	// SAML contains the SAML Connectors
+	// SAML contains SAML connectors
 	SAML []WebConfigAuthProvider `json:"saml,omitempty"`
+	// Github contains Github connectors
+	Github []WebConfigAuthProvider `json:"github,omitempty"`
 }

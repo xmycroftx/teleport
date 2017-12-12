@@ -157,6 +157,22 @@ func (s *IdentityService) GetUserBySAMLIdentity(id services.ExternalIdentity) (s
 	return nil, trace.NotFound("user with identity %v not found", &id)
 }
 
+// GetUserByGithubIdentity returns the first found user with specified Github identity
+func (s *IdentityService) GetUserByGithubIdentity(id services.ExternalIdentity) (services.User, error) {
+	users, err := s.GetUsers()
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	for _, u := range users {
+		for _, uid := range u.GetGithubIdentities() {
+			if uid.Equals(&id) {
+				return u, nil
+			}
+		}
+	}
+	return nil, trace.NotFound("user with identity %v not found", &id)
+}
+
 // DeleteUser deletes a user with all the keys from the backend
 func (s *IdentityService) DeleteUser(user string) error {
 	err := s.DeleteBucket([]string{"web", "users"}, user)
@@ -411,13 +427,14 @@ func (s *IdentityService) UpsertPassword(user string, password []byte) error {
 }
 
 var (
-	userTokensPath       = []string{"addusertokens"}
-	u2fRegChalPath       = []string{"adduseru2fchallenges"}
-	oidcConnectorsPath   = []string{"web", "connectors", "oidc", "connectors"}
-	oidcAuthRequestsPath = []string{"web", "connectors", "oidc", "requests"}
-	samlConnectorsPath   = []string{"web", "connectors", "saml", "connectors"}
-	samlAuthRequestsPath = []string{"web", "connectors", "saml", "requests"}
-	githubConnectorsPath = []string{"web", "connectors", "github", "connectors"}
+	userTokensPath         = []string{"addusertokens"}
+	u2fRegChalPath         = []string{"adduseru2fchallenges"}
+	oidcConnectorsPath     = []string{"web", "connectors", "oidc", "connectors"}
+	oidcAuthRequestsPath   = []string{"web", "connectors", "oidc", "requests"}
+	samlConnectorsPath     = []string{"web", "connectors", "saml", "connectors"}
+	samlAuthRequestsPath   = []string{"web", "connectors", "saml", "requests"}
+	githubConnectorsPath   = []string{"web", "connectors", "github", "connectors"}
+	githubAuthRequestsPath = []string{"web", "connectors", "github", "requests"}
 )
 
 // UpsertSignupToken upserts signup token - one time token that lets user to create a user account
@@ -896,4 +913,33 @@ func (s *IdentityService) GetGithubConnector(id string, withSecrets bool) (servi
 
 func (s *IdentityService) DeleteGithubConnector(id string) error {
 	return trace.Wrap(s.DeleteKey(githubConnectorsPath, id))
+}
+
+func (s *IdentityService) CreateGithubAuthRequest(req services.GithubAuthRequest, ttl time.Duration) error {
+	err := req.Check()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	err = s.CreateVal(githubAuthRequestsPath, req.StateToken, data, ttl)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
+func (s *IdentityService) GetGithubAuthRequest(stateToken string) (*services.GithubAuthRequest, error) {
+	data, err := s.GetVal(githubAuthRequestsPath, stateToken)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	var req services.GithubAuthRequest
+	err = json.Unmarshal(data, &req)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return &req, nil
 }

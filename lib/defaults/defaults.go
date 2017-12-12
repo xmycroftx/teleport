@@ -132,6 +132,12 @@ const (
 	// SAMLAuthRequestTTL is TTL of internally stored auth request created by client
 	SAMLAuthRequestTTL = 10 * 60 * time.Second
 
+	// GithubAuthRequestTTL is TTL of internally stored Github auth request
+	GithubAuthRequestTTL = 10 * 60 * time.Second
+
+	// WebSessionTTL is the default TTL for web sessions
+	WebSessionTTL = 60 * 60 * time.Second // 1 hour
+
 	// LogRotationPeriod defines how frequently to rotate the audit log file
 	LogRotationPeriod = (time.Hour * 24)
 
