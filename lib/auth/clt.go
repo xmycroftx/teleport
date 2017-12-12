@@ -1299,7 +1299,7 @@ func (c *Client) DeleteGithubConnector(id string) error {
 }
 
 func (c *Client) CreateGithubAuthRequest(req services.GithubAuthRequest) (*services.GithubAuthRequest, error) {
-	out, err := c.PostJSON(c.Endpoint("oidc", "requests", "create"),
+	out, err := c.PostJSON(c.Endpoint("github", "requests", "create"),
 		createGithubAuthRequestReq{Req: req})
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -1313,7 +1313,7 @@ func (c *Client) CreateGithubAuthRequest(req services.GithubAuthRequest) (*servi
 
 // ValidateGithubAuthCallback validates Github auth callback returned from redirect
 func (c *Client) ValidateGithubAuthCallback(q url.Values) (*GithubAuthResponse, error) {
-	out, err := c.PostJSON(c.Endpoint("oidc", "requests", "validate"),
+	out, err := c.PostJSON(c.Endpoint("github", "requests", "validate"),
 		validateGithubAuthCallbackReq{Query: q})
 	if err != nil {
 		return nil, trace.Wrap(err)

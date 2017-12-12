@@ -37,8 +37,9 @@ type GithubConnector interface {
 	SetClientSecret(string)
 	GetRedirectURL() string
 	SetRedirectURL(string)
-	GetGroupsToRoles() []GroupMapping
-	SetGroupsToRoles([]GroupMapping)
+	GetTeamsToLogins() []TeamMapping
+	SetTeamsToLogins([]TeamMapping)
+	MapClaims(GithubClaims) []string
 	GetOrgs() []string
 	GetDisplay() string
 	SetDisplay(string)
@@ -68,17 +69,25 @@ type GithubConnectorV3 struct {
 }
 
 type GithubConnectorSpecV3 struct {
-	ClientID      string         `json:"client_id"`
-	ClientSecret  string         `json:"client_secret"`
-	RedirectURL   string         `json:"redirect_url"`
-	GroupsToRoles []GroupMapping `json:"groups_to_roles"`
-	Display       string         `json:"display"`
+	ClientID      string        `json:"client_id"`
+	ClientSecret  string        `json:"client_secret"`
+	RedirectURL   string        `json:"redirect_url"`
+	TeamsToLogins []TeamMapping `json:"teams_to_logins"`
+	Display       string        `json:"display"`
 }
 
-type GroupMapping struct {
+type TeamMapping struct {
 	Organization string   `json:"organization"`
-	Group        string   `json:"group"`
-	Roles        []string `json:"roles"`
+	Team         string   `json:"team"`
+	Logins       []string `json:"logins"`
+}
+
+// GithubClaims represents Github user information obtained during OAuth2 flow
+type GithubClaims struct {
+	// Email is the user's primary verified email
+	Email string
+	// OrganizationToTeams is the user's organization and team membership
+	OrganizationToTeams map[string][]string
 }
 
 // GetName returns the name of the connector
@@ -143,17 +152,17 @@ func (c *GithubConnectorV3) SetRedirectURL(redirectURL string) {
 	c.Spec.RedirectURL = redirectURL
 }
 
-func (c *GithubConnectorV3) GetGroupsToRoles() []GroupMapping {
-	return c.Spec.GroupsToRoles
+func (c *GithubConnectorV3) GetTeamsToLogins() []TeamMapping {
+	return c.Spec.TeamsToLogins
 }
 
-func (c *GithubConnectorV3) SetGroupsToRoles(groupsToRoles []GroupMapping) {
-	c.Spec.GroupsToRoles = groupsToRoles
+func (c *GithubConnectorV3) SetTeamsToLogins(teamsToLogins []TeamMapping) {
+	c.Spec.TeamsToLogins = teamsToLogins
 }
 
 func (c *GithubConnectorV3) GetOrgs() []string {
 	var orgs []string
-	for _, mapping := range c.Spec.GroupsToRoles {
+	for _, mapping := range c.Spec.TeamsToLogins {
 		orgs = append(orgs, mapping.Organization)
 	}
 	return utils.Deduplicate(orgs)
@@ -165,6 +174,25 @@ func (c *GithubConnectorV3) GetDisplay() string {
 
 func (c *GithubConnectorV3) SetDisplay(display string) {
 	c.Spec.Display = display
+}
+
+// MapClaims returns a list of logins based on the provided claims
+func (c *GithubConnectorV3) MapClaims(claims GithubClaims) []string {
+	var logins []string
+	for _, mapping := range c.GetTeamsToLogins() {
+		teams, ok := claims.OrganizationToTeams[mapping.Organization]
+		if !ok {
+			// the user does not belong to this organization
+			continue
+		}
+		for _, team := range teams {
+			// see if the user belongs to this team
+			if team == mapping.Team {
+				logins = append(logins, mapping.Logins...)
+			}
+		}
+	}
+	return utils.Deduplicate(logins)
 }
 
 var githubConnectorMarshaler GithubConnectorMarshaler = &TeleportGithubConnectorMarshaler{}
@@ -245,21 +273,21 @@ var GithubConnectorSpecV3Schema = fmt.Sprintf(`{
     "client_secret": {"type": "string"},
     "redirect_url": {"type": "string"},
     "display": {"type": "string"},
-    "groups_to_roles": {
+    "teams_to_logins": {
       "type": "array",
       "items": %v
     }
   }
-}`, GroupMappingSchema)
+}`, TeamMappingSchema)
 
-var GroupMappingSchema = `{
+var TeamMappingSchema = `{
   "type": "object",
   "additionalProperties": false,
-  "required": ["organization", "group"],
+  "required": ["organization", "team"],
   "properties": {
     "organization": {"type": "string"},
-    "group": {"type": "string"},
-    "roles": {
+    "team": {"type": "string"},
+    "logins": {
       "type": "array",
       "items": {
         "type": "string"

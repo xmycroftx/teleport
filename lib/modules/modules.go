@@ -35,6 +35,8 @@ type Modules interface {
 	DefaultAllowedLogins() []string
 	// PrintVersion prints teleport version
 	PrintVersion()
+	RolesFromLogins([]string) []string
+	TraitsFromLogins([]string) map[string][]string
 }
 
 // SetModules sets the modules interface
@@ -71,6 +73,16 @@ func (p *defaultModules) PrintVersion() {
 		ver = fmt.Sprintf("%s git:%s", ver, teleport.Gitref)
 	}
 	fmt.Println(ver)
+}
+
+func (p *defaultModules) RolesFromLogins(logins []string) []string {
+	return []string{teleport.AdminRoleName}
+}
+
+func (p *defaultModules) TraitsFromLogins(logins []string) map[string][]string {
+	return map[string][]string{
+		teleport.TraitLogins: logins,
+	}
 }
 
 var (

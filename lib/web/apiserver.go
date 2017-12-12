@@ -198,6 +198,7 @@ func NewHandler(cfg Config, opts ...HandlerOption) (*RewritingHandler, error) {
 	h.POST("/webapi/saml/login/console", httplib.MakeHandler(h.samlSSOConsole))
 
 	// Github connector handlers
+	h.GET("/webapi/github/login/web", httplib.MakeHandler(h.githubLoginWeb))
 	h.POST("/webapi/github/login/console", httplib.MakeHandler(h.githubLoginConsole))
 	h.GET("/webapi/github/callback", httplib.MakeHandler(h.githubCallback))
 
@@ -400,6 +401,17 @@ func samlSettings(connector services.SAMLConnector, cap services.AuthPreference)
 	}
 }
 
+func githubSettings(connector services.GithubConnector, cap services.AuthPreference) client.AuthenticationSettings {
+	return client.AuthenticationSettings{
+		Type: teleport.Github,
+		Github: &client.GithubSettings{
+			Name:    connector.GetName(),
+			Display: connector.GetDisplay(),
+		},
+		SecondFactor: cap.GetSecondFactor(),
+	}
+}
+
 func defaultAuthenticationSettings(authClient auth.ClientI) (client.AuthenticationSettings, error) {
 	cap, err := authClient.GetAuthPreference()
 	if err != nil {
@@ -508,6 +520,15 @@ func (h *Handler) pingWithConnector(w http.ResponseWriter, r *http.Request, p ht
 	if err == nil {
 		return &client.PingResponse{
 			Auth:          samlSettings(samlConnector, cap),
+			ServerVersion: teleport.Version,
+		}, nil
+	}
+
+	// look for github connector
+	githubConnector, err := authClient.GetGithubConnector(connectorName, false)
+	if err == nil {
+		return &client.PingResponse{
+			Auth:          githubSettings(githubConnector, cap),
 			ServerVersion: teleport.Version,
 		}, nil
 	}
@@ -623,6 +644,37 @@ func (h *Handler) oidcLoginWeb(w http.ResponseWriter, r *http.Request, p httprou
 	return nil, nil
 }
 
+func (h *Handler) githubLoginWeb(w http.ResponseWriter, r *http.Request, p httprouter.Params) (interface{}, error) {
+	logger := log.WithFields(log.Fields{trace.Component: "github"})
+	logger.Debug("Web login start")
+	clientRedirectURL := r.URL.Query().Get("redirect_url")
+	if clientRedirectURL == "" {
+		return nil, trace.BadParameter("missing redirect_url query parameter")
+	}
+	connectorID := r.URL.Query().Get("connector_id")
+	if connectorID == "" {
+		return nil, trace.BadParameter("missing connector_id query parameter")
+	}
+	csrfToken, err := csrf.ExtractTokenFromCookie(r)
+	if err != nil {
+		logger.Warnf("Unable to extract CSRF token from cookie: %v", err)
+		return nil, trace.AccessDenied("access denied")
+	}
+	response, err := h.cfg.ProxyClient.CreateOIDCAuthRequest(
+		services.OIDCAuthRequest{
+			CSRFToken:         csrfToken,
+			ConnectorID:       connectorID,
+			CreateWebSession:  true,
+			ClientRedirectURL: clientRedirectURL,
+			CheckUser:         true,
+		})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	http.Redirect(w, r, response.RedirectURL, http.StatusFound)
+	return nil, nil
+}
+
 func (h *Handler) githubLoginConsole(w http.ResponseWriter, r *http.Request, p httprouter.Params) (interface{}, error) {
 	log.WithFields(log.Fields{trace.Component: "github"}).Debug(
 		"Console login start")
@@ -652,7 +704,7 @@ func (h *Handler) githubLoginConsole(w http.ResponseWriter, r *http.Request, p h
 
 func (h *Handler) githubCallback(w http.ResponseWriter, r *http.Request, p httprouter.Params) (interface{}, error) {
 	logger := log.WithFields(log.Fields{trace.Component: "github"})
-	logger.Debugf("Callback start")
+	logger.Debugf("Callback start: %v", r.URL.Query())
 
 	response, err := h.cfg.ProxyClient.ValidateGithubAuthCallback(r.URL.Query())
 	if err != nil {

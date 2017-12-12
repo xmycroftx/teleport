@@ -442,10 +442,10 @@ type githubCollection struct {
 }
 
 func (c *githubCollection) writeText(w io.Writer) error {
-	t := asciitable.MakeTable([]string{"Name", "Groups To Roles"})
+	t := asciitable.MakeTable([]string{"Name", "Teams To Logins"})
 	for _, conn := range c.connectors {
-		t.AddRow([]string{conn.GetName(), formatGroupsToRoles(
-			conn.GetGroupsToRoles())})
+		t.AddRow([]string{conn.GetName(), formatTeamsToLogins(
+			conn.GetTeamsToLogins())})
 	}
 	_, err := t.AsBuffer().WriteTo(w)
 	return trace.Wrap(err)
@@ -476,11 +476,11 @@ func (c *githubCollection) writeYAML(w io.Writer) error {
 	return trace.Wrap(err)
 }
 
-func formatGroupsToRoles(mappings []services.GroupMapping) string {
+func formatTeamsToLogins(mappings []services.TeamMapping) string {
 	var result []string
 	for _, m := range mappings {
-		result = append(result, fmt.Sprintf("%v/%v: %v",
-			m.Organization, m.Group, strings.Join(m.Roles, ", ")))
+		result = append(result, fmt.Sprintf("@%v/%v: %v",
+			m.Organization, m.Team, strings.Join(m.Logins, ", ")))
 	}
 	return strings.Join(result, ", ")
 }

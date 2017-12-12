@@ -157,6 +157,9 @@ const (
 	// SAML means authentication will happen remotely using a SAML connector.
 	SAML = "saml"
 
+	// Github means authentication will happen remotely using a Github connector.
+	Github = "github"
+
 	// JSON means JSON serialization format
 	JSON = "json"
 

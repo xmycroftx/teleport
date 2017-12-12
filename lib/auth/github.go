@@ -27,6 +27,7 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
+	"github.com/gravitational/teleport/lib/modules"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/utils"
 
@@ -44,11 +45,11 @@ func (s *AuthServer) CreateGithubAuthRequest(req services.GithubAuthRequest) (*s
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	req.RedirectURL = client.AuthCodeURL(req.StateToken, "", "")
 	req.StateToken, err = utils.CryptoRandomHex(TokenLenBytes)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+	req.RedirectURL = client.AuthCodeURL(req.StateToken, "", "")
 	log.WithFields(log.Fields{trace.Component: "github"}).Debugf(
 		"Redirect URL: %v", req.RedirectURL)
 	err = s.Identity.CreateGithubAuthRequest(req, defaults.GithubAuthRequestTTL)
@@ -98,11 +99,14 @@ func (s *AuthServer) ValidateGithubAuthCallback(q url.Values) (*GithubAuthRespon
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+	log.WithFields(log.Fields{trace.Component: "github"}).Debugf(
+		"Obtained OAuth2 token: Type=%v Expires=%v Scope=%v",
+		token.TokenType, token.Expires, token.Scope)
 	claims, err := s.populateGithubClaims(token.AccessToken, connector.GetOrgs())
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	if len(connector.GetGroupsToRoles()) != 0 {
+	if len(connector.GetTeamsToLogins()) != 0 {
 		err = s.createGithubUser(connector, *claims)
 		if err != nil {
 			return nil, trace.Wrap(err)
@@ -142,8 +146,9 @@ func (s *AuthServer) ValidateGithubAuthCallback(q url.Values) (*GithubAuthRespon
 		}
 	}
 	if len(req.PublicKey) != 0 {
+		certTTL := utils.MinTTL(defaults.WebSessionTTL, req.CertTTL)
 		allowedLogins, err := roles.CheckLoginDuration(
-			roles.AdjustSessionTTL(req.CertTTL))
+			roles.AdjustSessionTTL(certTTL))
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -151,7 +156,7 @@ func (s *AuthServer) ValidateGithubAuthCallback(q url.Values) (*GithubAuthRespon
 			req.PublicKey,
 			user,
 			allowedLogins,
-			req.CertTTL,
+			certTTL,
 			roles.CanForwardAgents(),
 			roles.CanPortForward(),
 			req.Compatibility)
@@ -174,11 +179,11 @@ func (s *AuthServer) ValidateGithubAuthCallback(q url.Values) (*GithubAuthRespon
 	return response, nil
 }
 
-func (s *AuthServer) createGithubUser(connector services.GithubConnector, claims githubClaims) error {
-	roles := rolesFromClaims(connector, claims)
+func (s *AuthServer) createGithubUser(connector services.GithubConnector, claims services.GithubClaims) error {
+	logins := connector.MapClaims(claims)
 	log.WithFields(log.Fields{trace.Component: "github"}).Debugf(
-		"Generating dynamic identity %v/%v with roles: %v",
-		connector.GetName(), claims.Email, roles)
+		"Generating dynamic identity %v/%v with logins: %v",
+		connector.GetName(), claims.Email, logins)
 	user, err := services.GetUserMarshaler().GenerateUser(&services.UserV2{
 		Kind:    services.KindUser,
 		Version: services.V2,
@@ -187,14 +192,13 @@ func (s *AuthServer) createGithubUser(connector services.GithubConnector, claims
 			Namespace: defaults.Namespace,
 		},
 		Spec: services.UserSpecV2{
-			Roles: roles,
+			Roles:  modules.GetModules().RolesFromLogins(logins),
+			Traits: modules.GetModules().TraitsFromLogins(logins),
 			// Expires:        ident.ExpiresAt, ?? TODO
-			GithubIdentities: []services.ExternalIdentity{
-				{
-					ConnectorID: connector.GetName(),
-					Username:    claims.Email,
-				},
-			},
+			GithubIdentities: []services.ExternalIdentity{{
+				ConnectorID: connector.GetName(),
+				Username:    claims.Email,
+			}},
 			CreatedBy: services.CreatedBy{
 				User: services.UserRef{Name: "system"},
 				Time: time.Now().UTC(),
@@ -224,38 +228,12 @@ func (s *AuthServer) createGithubUser(connector services.GithubConnector, claims
 	return nil
 }
 
-func rolesFromClaims(connector services.GithubConnector, claims githubClaims) []string {
-	var roles []string
-	for _, mapping := range connector.GetGroupsToRoles() {
-		teams, ok := claims.OrgToTeams[mapping.Organization]
-		if !ok {
-			// the user does not belong to this organization
-			continue
-		}
-		for _, team := range teams {
-			// see if the user belongs to this team
-			if team == mapping.Group {
-				roles = append(roles, mapping.Roles...)
-			}
-		}
-	}
-	return utils.Deduplicate(roles)
-}
-
-// githubClaims represents Github user information
-type githubClaims struct {
-	// Email is the user's primary email
-	Email string
-	// OrgToTeams is the user's organization and team membership
-	OrgToTeams map[string][]string
-}
-
-func (s *AuthServer) populateGithubClaims(token string, orgs []string) (*githubClaims, error) {
+func (s *AuthServer) populateGithubClaims(token string, orgs []string) (*services.GithubClaims, error) {
 	client := &githubAPIClient{token: token}
 	// find the primary and verified email
 	emails, err := client.getEmails()
 	if err != nil {
-		return nil, trace.Wrap(err)
+		return nil, trace.Wrap(err, "failed to query Github user emails")
 	}
 	var primaryEmail string
 	for _, email := range emails {
@@ -269,20 +247,26 @@ func (s *AuthServer) populateGithubClaims(token string, orgs []string) (*githubC
 			"could not find primary verified email: %v", emails)
 	}
 	// build team memberships
-	orgToTeams := make(map[string][]string)
-	for _, org := range orgs {
-		teams, err := client.getTeams(org)
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-		for _, team := range teams {
-			orgToTeams[org] = append(orgToTeams[org], team.Slug)
-		}
+	teams, err := client.getTeams()
+	if err != nil {
+		return nil, trace.Wrap(err, "failed to query Github user teams")
 	}
-	return &githubClaims{
-		Email:      primaryEmail,
-		OrgToTeams: orgToTeams,
-	}, nil
+	orgToTeams := make(map[string][]string)
+	for _, team := range teams {
+		orgToTeams[team.Org.Login] = append(
+			orgToTeams[team.Org.Login], team.Slug)
+	}
+	if len(orgToTeams) == 0 {
+		return nil, trace.AccessDenied(
+			"list of user teams is empty, did you grant access?")
+	}
+	claims := &services.GithubClaims{
+		Email:               primaryEmail,
+		OrganizationToTeams: orgToTeams,
+	}
+	log.WithFields(log.Fields{trace.Component: "github"}).Debugf(
+		"Claims: %#v", claims)
+	return claims, nil
 }
 
 func (s *AuthServer) getGithubOAuth2Client(connector services.GithubConnector) (*oauth2.Client, error) {
@@ -318,18 +302,18 @@ type githubAPIClient struct {
 	token string
 }
 
-type emailsResponse struct {
+type emailResponse struct {
 	Email    string `json:"email"`
 	Verified bool   `json:"verified"`
 	Primary  bool   `json:"primary"`
 }
 
-func (c *githubAPIClient) getEmails() ([]emailsResponse, error) {
+func (c *githubAPIClient) getEmails() ([]emailResponse, error) {
 	bytes, err := c.get("https://api.github.com/user/emails")
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	var emails []emailsResponse
+	var emails []emailResponse
 	err = json.Unmarshal(bytes, &emails)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -337,17 +321,22 @@ func (c *githubAPIClient) getEmails() ([]emailsResponse, error) {
 	return emails, nil
 }
 
-type teamsResponse struct {
-	Name string `json:"name"`
-	Slug string `json:"slug"`
+type teamResponse struct {
+	Name string      `json:"name"`
+	Slug string      `json:"slug"`
+	Org  orgResponse `json:"organization"`
 }
 
-func (c *githubAPIClient) getTeams(org string) ([]teamsResponse, error) {
-	bytes, err := c.get(fmt.Sprintf("https://api.github.com/orgs/%v/teams", org))
+type orgResponse struct {
+	Login string `json:"login"`
+}
+
+func (c *githubAPIClient) getTeams() ([]teamResponse, error) {
+	bytes, err := c.get("https://api.github.com/user/teams")
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	var teams []teamsResponse
+	var teams []teamResponse
 	err = json.Unmarshal(bytes, &teams)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -366,9 +355,13 @@ func (c *githubAPIClient) get(url string) ([]byte, error) {
 		return nil, trace.Wrap(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != 200 {
-		return nil, trace.AccessDenied("bad response: %v",
-			response.StatusCode)
+	bytes, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return nil, trace.Wrap(err)
 	}
-	return ioutil.ReadAll(response.Body)
+	if response.StatusCode != 200 {
+		return nil, trace.AccessDenied("bad response: %v %v",
+			response.StatusCode, string(bytes))
+	}
+	return bytes, nil
 }
